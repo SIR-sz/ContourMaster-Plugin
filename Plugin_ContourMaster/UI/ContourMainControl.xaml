@@ -1,0 +1,48 @@
+﻿<UserControl x:Class="Plugin_ContourMaster.UI.ContourMainControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             mc:Ignorable="d" 
+             d:DesignHeight="500" d:DesignWidth="300"
+             Background="#F3F3F3">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="15">
+            <StackPanel>
+                <TextBlock Text="像素法提取轮廓" FontSize="18" FontWeight="Bold" Margin="0,0,0,20" Foreground="#333333"/>
+
+                <TextBlock Text="灰度阈值 (0-255):" Margin="0,5" Foreground="#555555"/>
+                <DockPanel Margin="0,0,0,15">
+                    <TextBlock Text="{Binding Threshold, StringFormat={}{0:F0}}" Width="35" DockPanel.Dock="Right" TextAlignment="Right" VerticalAlignment="Center" Margin="5,0,0,0"/>
+                    <Slider Minimum="0" Maximum="255" Value="{Binding Threshold}" TickFrequency="1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                </DockPanel>
+
+                <TextBlock Text="路径简化公差 (数值越大点越少):" Margin="0,5" Foreground="#555555"/>
+                <DockPanel Margin="0,0,0,15">
+                    <TextBlock Text="{Binding SimplifyTolerance, StringFormat={}{0:F1}}" Width="35" DockPanel.Dock="Right" TextAlignment="Right" VerticalAlignment="Center" Margin="5,0,0,0"/>
+                    <Slider Minimum="0.1" Maximum="10.0" Value="{Binding SimplifyTolerance}" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                </DockPanel>
+
+                <TextBlock Text="目标图层名称:" Margin="0,5" Foreground="#555555"/>
+                <TextBox Text="{Binding LayerName, UpdateSourceTrigger=PropertyChanged}" Height="28" VerticalContentAlignment="Center" Padding="5,0" Margin="0,0,0,25"/>
+
+                <Button Content="拾取屏幕图像并生成" Height="45" 
+                        Background="#007ACC" Foreground="White" BorderThickness="0"
+                        FontWeight="Bold" Cursor="Hand"
+                        Click="BtnExecute_Click">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="4"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+
+                <Border Background="#E1E1E1" CornerRadius="4" Margin="0,20,0,0" Padding="10">
+                    <TextBlock Text="提示：请确保 CAD 背景为黑色或纯色以获得最佳效果。点击拾取后，程序将分析当前视口内的像素边缘。" 
+                               Foreground="#666666" FontSize="11" TextWrapping="Wrap" LineHeight="1.5"/>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

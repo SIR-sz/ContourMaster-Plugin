@@ -1,0 +1,36 @@
+﻿using System.ComponentModel;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
+namespace Plugin_ContourMaster.Models
+{
+    [Obfuscation(Feature = "renaming", Exclude = true)]
+    public class ContourSettings : INotifyPropertyChanged
+    {
+        private double _threshold = 128.0;
+        private double _simplifyTolerance = 0.5;
+        private string _layerName = "像素轮廓结果";
+
+        public double Threshold
+        {
+            get => _threshold;
+            set { _threshold = value; OnPropertyChanged(); }
+        }
+
+        public double SimplifyTolerance
+        {
+            get => _simplifyTolerance;
+            set { _simplifyTolerance = value; OnPropertyChanged(); }
+        }
+
+        public string LayerName
+        {
+            get => _layerName;
+            set { _layerName = value; OnPropertyChanged(); }
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
+        protected void OnPropertyChanged([CallerMemberName] string name = null)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+}
