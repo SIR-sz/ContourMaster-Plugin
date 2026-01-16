@@ -1,0 +1,37 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36804.6
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Plugin_ContourMaster", "Plugin_ContourMaster\Plugin_ContourMaster.csproj", "{5CAD8B1C-CAD8-487E-878A-201E1229E117}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Standalone|Any CPU = Standalone|Any CPU
+		Standalone|x64 = Standalone|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Debug|Any CPU.Build.0 = Debug|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Debug|x64.ActiveCfg = Debug|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Debug|x64.Build.0 = Debug|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Release|Any CPU.ActiveCfg = Release|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Release|Any CPU.Build.0 = Release|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Release|x64.ActiveCfg = Release|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Release|x64.Build.0 = Release|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Standalone|Any CPU.ActiveCfg = Release|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Standalone|Any CPU.Build.0 = Release|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Standalone|x64.ActiveCfg = Release|x64
+		{5CAD8B1C-CAD8-487E-878A-201E1229E117}.Standalone|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {6BDC29C8-3282-41D1-BF77-C259103D0E16}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,41 @@
+﻿<UserControl x:Class="Plugin_ContourMaster.ContourMainControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             mc:Ignorable="d" 
+             d:DesignHeight="450" d:DesignWidth="300" Background="#F3F3F3">
+    <Grid Margin="10">
+        <StackPanel>
+            <TextBlock Text="像素法提取轮廓" FontSize="16" FontWeight="Bold" Margin="0,0,0,15"/>
+
+            <TextBlock Text="灰度阈值 (0-255):" Margin="0,5"/>
+            <DockPanel>
+                <TextBlock Text="{Binding Threshold, StringFormat={}{0:F0}}" Width="30" DockPanel.Dock="Right" TextAlignment="Right"/>
+                <Slider Minimum="0" Maximum="255" Value="{Binding Threshold}" TickFrequency="1" IsSnapToTickEnabled="True"/>
+            </DockPanel>
+
+            <TextBlock Text="路径简化公差:" Margin="0,15,0,5"/>
+            <DockPanel>
+                <TextBlock Text="{Binding SimplifyTolerance, StringFormat={}{0:F1}}" Width="30" DockPanel.Dock="Right" TextAlignment="Right"/>
+                <Slider Minimum="0.1" Maximum="10.0" Value="{Binding SimplifyTolerance}" TickFrequency="0.1" IsSnapToTickEnabled="True"/>
+            </DockPanel>
+
+            <TextBlock Text="目标图层名称:" Margin="0,15,0,5"/>
+            <TextBox Text="{Binding LayerName}" Height="25" VerticalContentAlignment="Center"/>
+
+            <Button Content="拾取屏幕图像并生成" Height="40" Margin="0,30,0,0" 
+                    Background="#007ACC" Foreground="White" BorderThickness="0"
+                    Click="BtnExecute_Click">
+                <Button.Resources>
+                    <Style TargetType="Border">
+                        <Setter Property="CornerRadius" Value="4"/>
+                    </Style>
+                </Button.Resources>
+            </Button>
+
+            <TextBlock Text="提示：请确保CAD背景为黑色或纯色以获得最佳效果。" 
+                       Foreground="#666666" FontSize="11" Margin="0,15" TextWrapping="Wrap"/>
+        </StackPanel>
+    </Grid>
+</UserControl>
