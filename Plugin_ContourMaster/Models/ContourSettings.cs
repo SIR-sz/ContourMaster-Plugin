@@ -9,8 +9,9 @@ namespace Plugin_ContourMaster.Models
     {
         private double _threshold = 128.0;
         private double _simplifyTolerance = 0.5;
-        private int _smoothLevel = 2; // ✨ 新增：平滑等级（0-10）
-        private string _layerName = "像素轮廓结果";
+        private int _smoothLevel = 2;
+        private string _layerName = "LK_XS"; // ✨ 修改：默认图层改为 LK_XS
+        private int _precisionLevel = 5;     // ✨ 采样精度等级 (1-10)，默认 5
 
         public double Threshold
         {
@@ -34,6 +35,12 @@ namespace Plugin_ContourMaster.Models
         {
             get => _layerName;
             set { _layerName = value; OnPropertyChanged(); }
+        }
+
+        public int PrecisionLevel
+        {
+            get => _precisionLevel;
+            set { _precisionLevel = value; OnPropertyChanged(); }
         }
 
         public event PropertyChangedEventHandler PropertyChanged;
