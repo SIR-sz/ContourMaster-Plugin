@@ -77,38 +77,58 @@ namespace Plugin_ContourMaster.Services
         }
 
         // 3. 渲染位图
+        // 修改后的 RasterizeSelection 方法
         private Bitmap RasterizeSelection(Document doc, SelectionSet ss, Extents3d ext, double scale)
         {
-            int bmpW = (int)((ext.MaxPoint.X - ext.MinPoint.X) * scale) + 100;
-            int bmpH = (int)((ext.MaxPoint.Y - ext.MinPoint.Y) * scale) + 100;
+            // 增加：防止除以 0 导致的长宽异常
+            double worldW = ext.MaxPoint.X - ext.MinPoint.X;
+            double worldH = ext.MaxPoint.Y - ext.MinPoint.Y;
+            if (worldW <= 0 || worldH <= 0) return null;
+
+            int bmpW = (int)(worldW * scale) + 100;
+            int bmpH = (int)(worldH * scale) + 100;
+
+            // 限制位图最大尺寸，防止内存溢出 (400个元素可能跨度很大)
+            bmpW = Math.Min(bmpW, 8000);
+            bmpH = Math.Min(bmpH, 8000);
 
             Bitmap bmp = new Bitmap(bmpW, bmpH);
             using (Graphics g = Graphics.FromImage(bmp))
             {
                 g.Clear(System.Drawing.Color.Black);
-                g.SmoothingMode = SmoothingMode.None;
-
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
                 {
                     using (System.Drawing.Pen thinPen = new System.Drawing.Pen(System.Drawing.Color.White, 1.2f))
                     {
-                        thinPen.Alignment = PenAlignment.Center;
-
                         foreach (SelectedObject so in ss)
                         {
                             Curve curve = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
                             if (curve == null) continue;
 
+                            // 修复点：检查退化曲线（长度几乎为0的线）
+                            if (Math.Abs(curve.EndParam - curve.StartParam) < 1e-6) continue;
+
                             int segments = 200;
                             PointF[] pts = new PointF[segments + 1];
-                            double step = (curve.EndParam - curve.StartParam) / segments;
+                            double startP = curve.StartParam;
+                            double endP = curve.EndParam;
+                            double step = (endP - startP) / segments;
 
                             for (int i = 0; i <= segments; i++)
                             {
-                                AcadPoint3d p = curve.GetPointAtParameter(curve.StartParam + step * i);
-                                float px = (float)((p.X - ext.MinPoint.X) * scale) + 50f;
-                                float py = (float)((ext.MaxPoint.Y - p.Y) * scale) + 50f;
-                                pts[i] = new PointF(px, py);
+                                // 修复点：防止浮点数计算结果微弱超出 [StartParam, EndParam] 范围
+                                double currentParam = startP + (step * i);
+                                if (currentParam < startP) currentParam = startP;
+                                if (currentParam > endP) currentParam = endP;
+
+                                try
+                                {
+                                    AcadPoint3d p = curve.GetPointAtParameter(currentParam);
+                                    float px = (float)((p.X - ext.MinPoint.X) * scale) + 50f;
+                                    float py = (float)((ext.MaxPoint.Y - p.Y) * scale) + 50f;
+                                    pts[i] = new PointF(px, py);
+                                }
+                                catch { continue; } // 如果某个点还是失败，跳过该点
                             }
                             g.DrawLines(thinPen, pts);
                         }
@@ -120,6 +140,7 @@ namespace Plugin_ContourMaster.Services
         }
 
         // 4. OpenCV 提取轮廓 (显式指定点类型解决冲突)
+        // 4. OpenCV 提取轮廓 - 修改版：识别内部闭合区域
         private List<List<AcadPoint2d>> ExtractCadContoursWithOpenCv(Bitmap bmp, Extents3d ext, double scale)
         {
             List<List<AcadPoint2d>> results = new List<List<AcadPoint2d>>();
@@ -131,15 +152,29 @@ namespace Plugin_ContourMaster.Services
 
                 using (Mat binary = new Mat())
                 {
+                    // 阈值处理，确保线是纯白色(255)，背景是纯黑色(0)
                     Cv2.Threshold(gray, binary, _settings.Threshold, 255, ThresholdTypes.Binary);
 
                     CvPoint[][] contours;
                     HierarchyIndex[] hierarchy;
-                    Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
 
-                    foreach (var contour in contours)
+                    // 【核心修改1点】：使用 RetrievalModes.Tree 以获取层级关系
+                    Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
+
+                    for (int i = 0; i < contours.Length; i++)
                     {
-                        if (contour.Length < 5) continue;
+                        // 【核心修改2点】：层级过滤
+                        // 在 Tree 模式下，hierarchy[i].Parent != -1 表示该轮廓是一个“洞”或者嵌套在内的形状
+                        // 我们绘制的线是白色，闭合区域（空腔）在 OpenCV 眼中就是白色线条包围的“黑色洞”
+                        // 只有 Parent 不为 -1 的轮廓才是我们要的闭合区域内部边界
+                        if (hierarchy[i].Parent == -1)
+                            continue; // 跳过最外层的包络线（即你说的“把所有线生成一遍”的那个大圈）
+
+                        var contour = contours[i];
+
+                        // 过滤掉面积过小的杂质区域（噪点）
+                        double area = Cv2.ContourArea(contour);
+                        if (area < 100) continue;
 
                         double epsilon = 1.0 + (_settings.SmoothLevel * 0.2);
                         CvPoint[] approx = Cv2.ApproxPolyDP(contour, epsilon, true);
@@ -147,11 +182,9 @@ namespace Plugin_ContourMaster.Services
                         List<AcadPoint2d> cadPath = new List<AcadPoint2d>();
                         foreach (var p in approx)
                         {
-                            // p 是 OpenCV 的 CvPoint (像素坐标)
-                            // 映射到 AutoCAD 的 AcadPoint2d (世界坐标)
+                            // 映射像素坐标到 CAD 世界坐标
                             double wx = (p.X + 0.5 - 50.0) / scale + ext.MinPoint.X;
                             double wy = ext.MaxPoint.Y - (p.Y + 0.5 - 50.0) / scale;
-
                             cadPath.Add(new AcadPoint2d(wx, wy));
                         }
 
