@@ -142,24 +142,44 @@ namespace Plugin_ContourMaster.Services
         private bool[,] IdentifyEnclosedHolesWithMorphology(Bitmap bmp, int radius)
         {
             int w = bmp.Width, h = bmp.Height;
+            bool[,] isLine = new bool[w, h];
 
             // 提取像素线图
-            bool[,] isLine = ExtractLineMap(bmp);
+            BitmapData data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            byte[] pixels = new byte[data.Stride * h];
+            Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+            bmp.UnlockBits(data);
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    isLine[x, y] = pixels[y * data.Stride + x * 4 + 2] > 128;
 
             // 1. 膨胀：封死缺口
             bool[,] dilated = Dilate(isLine, radius);
 
-            // 2. 种子填充识别外部区域
-            bool[,] isOutside = FloodFillOutside(dilated);
+            // 2. 种子填充识别外部空间
+            bool[,] isOutside = new bool[w, h];
+            Queue<System.Drawing.Point> q = new Queue<System.Drawing.Point>();
+            for (int x = 0; x < w; x++) { q.Enqueue(new System.Drawing.Point(x, 0)); q.Enqueue(new System.Drawing.Point(x, h - 1)); }
+            for (int y = 0; y < h; y++) { q.Enqueue(new System.Drawing.Point(0, y)); q.Enqueue(new System.Drawing.Point(w - 1, y)); }
 
-            // 3. 提取内部孔洞区域（非外部且非线段）
+            while (q.Count > 0)
+            {
+                var p = q.Dequeue();
+                if (p.X < 0 || p.X >= w || p.Y < 0 || p.Y >= h || isOutside[p.X, p.Y] || dilated[p.X, p.Y]) continue;
+                isOutside[p.X, p.Y] = true;
+                q.Enqueue(new System.Drawing.Point(p.X + 1, p.Y)); q.Enqueue(new System.Drawing.Point(p.X - 1, p.Y));
+                q.Enqueue(new System.Drawing.Point(p.X, p.Y + 1)); q.Enqueue(new System.Drawing.Point(p.X, p.Y - 1));
+            }
+
+            // 3. 提取内部孔洞区域
             bool[,] holeMap = new bool[w, h];
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
                     holeMap[x, y] = !dilated[x, y] && !isOutside[x, y];
 
-            // 4. 腐蚀还原位置
-            return ErodeHole(holeMap, radius);
+            // ✨ 核心修正：腐蚀半径设为 radius + 1
+            // 由于原始线条宽度为 1 像素，多出的 1 像素腐蚀能让轮廓线“撞”回原始线条的中心线，解决内缩问题
+            return ErodeHole(holeMap, radius + 1);
         }
         // 补全：提取像素位图到布尔数组
         private bool[,] ExtractLineMap(Bitmap bmp)
@@ -233,19 +253,54 @@ namespace Plugin_ContourMaster.Services
                             NextPixel:;
             return dest;
         }
+        // ✨ 新增：拉普拉斯平滑，消除像素点的局部抖动
+        private List<PointF> SmoothPoints(List<PointF> pts)
+        {
+            if (_settings.SmoothLevel <= 0 || pts.Count < 3) return pts;
+
+            List<PointF> smoothed = new List<PointF>(pts.Count);
+            smoothed.Add(pts[0]); // 保留起点
+
+            for (int i = 1; i < pts.Count - 1; i++)
+            {
+                // 简单的加权平均平滑
+                float sx = (pts[i - 1].X + pts[i].X + pts[i + 1].X) / 3f;
+                float sy = (pts[i - 1].Y + pts[i].Y + pts[i + 1].Y) / 3f;
+                smoothed.Add(new PointF(sx, sy));
+            }
+
+            smoothed.Add(pts[pts.Count - 1]); // 保留终点
+            return smoothed;
+        }
 
         private List<List<PointF>> FindContours(bool[,] map)
         {
             int w = map.GetLength(0), h = map.GetLength(1);
             List<List<PointF>> result = new List<List<PointF>>();
             bool[,] visited = new bool[w, h];
+
+            // ✨ 核心修复：根据设置中的 SmoothLevel 动态计算简化容差（像素单位）
+            // 容差越小，越贴合像素阶梯（锯齿重）；容差越大，线条越顺滑。
+            // 建议映射范围：0.5 - 5.5 像素
+            double simplifyTol = 0.5 + (_settings.SmoothLevel * 0.5);
+
             for (int y = 1; y < h - 1; y++)
+            {
                 for (int x = 1; x < w - 1; x++)
+                {
                     if (map[x, y] && !visited[x, y] && (!map[x - 1, y] || !map[x + 1, y] || !map[x, y - 1] || !map[x, y + 1]))
                     {
                         var path = Trace(map, x, y, visited);
-                        if (path.Count > 15) result.Add(Simplify(path, 0.4));
+
+                        // 增加路径预平滑处理，减少像素抖动
+                        if (path.Count > 15)
+                        {
+                            var smoothedPath = SmoothPoints(path); // 预处理平滑
+                            result.Add(Simplify(smoothedPath, simplifyTol));
+                        }
                     }
+                }
+            }
             return result;
         }
 
@@ -305,20 +360,15 @@ namespace Plugin_ContourMaster.Services
                 Database db = doc.Database;
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
 
-                // 使用设置中的图层名
-                string layerName = _settings.LayerName ?? "像素轮廓结果";
+                string layerName = "LK_XS";
                 LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
-
                 if (!lt.Has(layerName))
                 {
                     lt.UpgradeOpen();
                     LayerTableRecord ltr = new LayerTableRecord { Name = layerName };
-
-                    // 修复 CS0104：显式指定使用 AutoCAD 的 Color 类
-                    ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2); // 黄色
-
-                    lt.Add(ltr);
-                    tr.AddNewlyCreatedDBObject(ltr, true);
+                    // 显式引用 AutoCAD 颜色类，防止与 System.Drawing 冲突
+                    ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2);
+                    lt.Add(ltr); tr.AddNewlyCreatedDBObject(ltr, true);
                 }
 
                 foreach (var pts in contours)
@@ -330,10 +380,14 @@ namespace Plugin_ContourMaster.Services
 
                     for (int i = 0; i < pts.Count; i++)
                     {
-                        double wx = (pts[i].X - 50) / scale + ext.MinPoint.X;
-                        double wy = ext.MaxPoint.Y - (pts[i].Y - 50) / scale;
+                        // ✨ 增加 0.5 纠偏：将像素索引转换为像素的几何中心坐标
+                        double px = pts[i].X + 0.5;
+                        double py = pts[i].Y + 0.5;
 
-                        // 检查数值有效性，防止 eInvalidInput
+                        double wx = (px - 50) / scale + ext.MinPoint.X;
+                        double wy = ext.MaxPoint.Y - (py - 50) / scale;
+
+                        // 检查数值有效性，防止 eInvalidInput 异常
                         if (!double.IsNaN(wx) && !double.IsInfinity(wx) && !double.IsNaN(wy) && !double.IsInfinity(wy))
                         {
                             pl.AddVertexAt(validVertexCount, new Point2d(wx, wy), 0, 0, 0);
@@ -345,7 +399,7 @@ namespace Plugin_ContourMaster.Services
                     {
                         pl.Closed = true;
                         pl.Layer = layerName;
-                        pl.ColorIndex = 256; // 使用随层颜色 (ByLayer)
+                        pl.ColorIndex = 256; // ByLayer
                         btr.AppendEntity(pl);
                         tr.AddNewlyCreatedDBObject(pl, true);
                     }
