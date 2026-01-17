@@ -4,8 +4,28 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
              mc:Ignorable="d" 
-             d:DesignHeight="600" d:DesignWidth="300"
+             d:DesignHeight="700" d:DesignWidth="300"
              Background="#F0F2F5">
+
+    <UserControl.Resources>
+        <Style x:Key="LabelStyle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#333333"/>
+            <Setter Property="Margin" Value="0,0,0,5"/>
+        </Style>
+
+        <Style x:Key="ValueStyle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#007ACC"/>
+        </Style>
+
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin" Value="0,0,0,12"/>
+            <Setter Property="Padding" Value="10"/>
+            <Setter Property="BorderBrush" Value="#DCDCDC"/>
+            <Setter Property="Background" Value="White"/>
+        </Style>
+    </UserControl.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -13,68 +33,95 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="#444444" Padding="15,10">
+        <Border Grid.Row="0" Background="#444444" Padding="15,12">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="🎯 轮廓提取" Foreground="White" FontSize="14" FontWeight="Bold"/>
-                
+                <TextBlock Text="🎯 轮廓提取工具" Foreground="White" FontSize="14" FontWeight="Bold"/>
             </StackPanel>
         </Border>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-            <StackPanel Margin="12">
+            <StackPanel Margin="12,15,12,15">
 
-                <GroupBox Header="1. 算法核心参数" Margin="0,0,0,10" Padding="8,10">
+                <GroupBox Header="1. 算法核心参数">
                     <StackPanel>
-                        <DockPanel Margin="0,0,0,12">
-                            <TextBlock Text="像素精度等级:" VerticalAlignment="Center" FontWeight="SemiBold"/>
-                            <TextBlock Text="{Binding PrecisionLevel}" DockPanel.Dock="Right" Foreground="#007ACC" FontWeight="Bold" Margin="5,0,0,0"/>
+                        <DockPanel Margin="0,5">
+                            <TextBlock Text="像素精度等级" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding PrecisionLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
                             <Slider Minimum="1" Maximum="10" Value="{Binding PrecisionLevel}" 
-                                    TickFrequency="1" IsSnapToTickEnabled="True" Margin="10,0,0,0"/>
+                                    TickFrequency="1" IsSnapToTickEnabled="True" Margin="12,0"/>
                         </DockPanel>
 
-                        <TextBlock Text="{Binding Threshold, StringFormat='识别阈值: {0:F0}'}" FontWeight="SemiBold"/>
-                        <Slider Minimum="0" Maximum="255" Value="{Binding Threshold}" 
-                                TickFrequency="5" IsSnapToTickEnabled="True" Margin="0,5,0,0"/>
-                        <TextBlock Text="* 数值越小对暗色线条越敏感" FontSize="10" Foreground="Gray" Margin="0,2,0,0"/>
+                        <DockPanel Margin="0,10,0,5">
+                            <TextBlock Text="识别阈值" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Threshold, StringFormat='\{0:F0\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
+                            <Slider Minimum="0" Maximum="255" Value="{Binding Threshold}" 
+                                    TickFrequency="5" IsSnapToTickEnabled="True" Margin="12,0"/>
+                        </DockPanel>
+                        <TextBlock Text="* 数值越小对暗色线条越敏感" FontSize="10" Foreground="#888888" Margin="0,2,0,0"/>
                     </StackPanel>
                 </GroupBox>
 
-                <GroupBox Header="2. 几何形态优化" Margin="0,0,0,10" Padding="8,10">
+                <GroupBox Header="2. 几何形态优化">
                     <StackPanel>
-                        <TextBlock Text="{Binding SimplifyTolerance, StringFormat='补缝距离 (CAD单位): {0:F2}'}" FontWeight="SemiBold"/>
-                        <Slider Minimum="0.01" Maximum="5.0" Value="{Binding SimplifyTolerance}" 
-                                TickFrequency="0.05" IsSnapToTickEnabled="True" Margin="0,5,0,12"/>
+                        <DockPanel Margin="0,5">
+                            <TextBlock Text="补缝距离 (CAD)" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SimplifyTolerance, StringFormat='\{0:F2\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
+                            <Slider Minimum="0.01" Maximum="5.0" Value="{Binding SimplifyTolerance}" 
+                                    TickFrequency="0.05" IsSnapToTickEnabled="True" Margin="12,0"/>
+                        </DockPanel>
 
-                        <TextBlock Text="{Binding SmoothLevel, StringFormat='边界平滑等级: {0}'}" FontWeight="SemiBold"/>
-                        <Slider Minimum="0" Maximum="10" Value="{Binding SmoothLevel}" 
-                                TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,5,0,0"/>
+                        <DockPanel Margin="0,10,0,5">
+                            <TextBlock Text="边界平滑等级" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SmoothLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
+                            <Slider Minimum="0" Maximum="10" Value="{Binding SmoothLevel}" 
+                                    TickFrequency="1" IsSnapToTickEnabled="True" Margin="12,0"/>
+                        </DockPanel>
                     </StackPanel>
                 </GroupBox>
 
-                <GroupBox Header="3. 输出设置" Margin="0,0,0,15" Padding="8,10">
-                    <StackPanel>
-                        <TextBlock Text="生成目标图层:" FontWeight="SemiBold" Margin="0,0,0,5"/>
-                        <TextBox Text="{Binding LayerName}" Height="28" 
+                <GroupBox Header="3. 输出设置">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="生成图层:" Style="{StaticResource LabelStyle}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <TextBox Grid.Column="1" Text="{Binding LayerName}" Height="26" 
                                  VerticalContentAlignment="Center" Padding="5,0" 
-                                 Background="White" BorderBrush="#DDDDDD"/>
+                                 Background="#FFFFFF" BorderBrush="#CCCCCC"/>
+                    </Grid>
+                </GroupBox>
+
+                <GroupBox Header="4. 外部文件转 CAD (Beta)" Background="#F9F9F9">
+                    <StackPanel>
+                        <TextBlock Text="将图片或 PDF 直接转换为矢量线条" FontSize="10" Foreground="#666666" Margin="2,0,0,8"/>
+                        <UniformGrid Columns="2">
+                            <Button Content="🖼️ 识别图片" Height="34" Margin="0,0,4,0" Click="BtnImage_Click" 
+                                    Background="#E3F2FD" BorderBrush="#BBDEFB" Cursor="Hand"/>
+                            <Button Content="📄 识别 PDF" Height="34" Margin="4,0,0,0" Click="BtnPdf_Click" 
+                                    Background="#F1F8E9" BorderBrush="#DCEDC8" Cursor="Hand"/>
+                        </UniformGrid>
                     </StackPanel>
                 </GroupBox>
 
-                <Button Content="🚀 开始提取轮廓" Height="45" 
-                        Background="#007ACC" Foreground="White" 
-                        FontSize="14" FontWeight="Bold" 
-                        BorderThickness="0" Cursor="Hand"
-                        Click="BtnExecute_Click">
-                    <Button.Resources>
-                        <Style TargetType="Border">
-                            <Setter Property="CornerRadius" Value="4"/>
-                        </Style>
-                    </Button.Resources>
-                </Button>
+                <StackPanel Margin="0,10,0,0">
+                    <Button Content="🚀 开始提取轮廓" Height="48" 
+                            Background="#007ACC" Foreground="White" 
+                            FontSize="15" FontWeight="Bold" 
+                            BorderThickness="0" Cursor="Hand"
+                            Click="BtnExecute_Click">
+                        <Button.Resources>
+                            <Style TargetType="Border">
+                                <Setter Property="CornerRadius" Value="6"/>
+                            </Style>
+                        </Button.Resources>
+                    </Button>
 
-                <TextBlock Text="提示：选中线条后按回车执行" 
-                           HorizontalAlignment="Center" Margin="0,10,0,0" 
-                           Foreground="#999999" FontSize="11"/>
+                    <TextBlock Text="提示：选中线条后按回车键执行" 
+                               HorizontalAlignment="Center" Margin="0,12,0,0" 
+                               Foreground="#777777" FontSize="11"/>
+                </StackPanel>
+
             </StackPanel>
         </ScrollViewer>
     </Grid>
