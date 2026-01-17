@@ -12,12 +12,14 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using Tesseract;
+
 // ✨ 定义别名以彻底解决命名冲突
 using AcadPoint2d = Autodesk.AutoCAD.Geometry.Point2d;
 using AcadPoint3d = Autodesk.AutoCAD.Geometry.Point3d;
@@ -41,13 +43,17 @@ namespace Plugin_ContourMaster.Services
             {
                 PromptSelectionResult psr = ed.GetSelection(new PromptSelectionOptions { MessageForAdding = "\n请选择要生成轮廓的矢量元素: " });
                 if (psr.Status != PromptStatus.OK) return;
+
                 Extents3d totalExt = GetSelectionExtents(psr.Value);
                 int targetSize = _settings.PrecisionLevel * 1000;
                 double worldW = totalExt.MaxPoint.X - totalExt.MinPoint.X;
                 double worldH = totalExt.MaxPoint.Y - totalExt.MinPoint.Y;
+
                 if (worldW <= 0 || worldH <= 0) return;
                 double scale = targetSize / Math.Max(worldW, worldH);
+
                 if (!IsMemorySafe(worldW, worldH, scale, ed)) return;
+
                 using (Bitmap bmp = RasterizeSelection(doc, psr.Value, totalExt, scale))
                 {
                     if (bmp == null) return;
@@ -74,12 +80,14 @@ namespace Plugin_ContourMaster.Services
                 peo.AddAllowedClass(typeof(RasterImage), false);
                 PromptEntityResult per = ed.GetEntity(peo);
                 if (per.Status != PromptStatus.OK) return;
+
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
                 {
                     RasterImage img = tr.GetObject(per.ObjectId, OpenMode.ForRead) as RasterImage;
                     if (img == null) return;
                     RasterImageDef imgDef = tr.GetObject(img.ImageDefId, OpenMode.ForRead) as RasterImageDef;
                     if (!File.Exists(imgDef.ActiveFileName)) throw new Exception("找不到图像源文件。");
+
                     using (Bitmap bmp = new Bitmap(imgDef.ActiveFileName))
                     {
                         Matrix3d pixelToWorld = GetEntityTransform(img, bmp.Width, bmp.Height);
@@ -98,7 +106,7 @@ namespace Plugin_ContourMaster.Services
         }
         #endregion
 
-        #region 3. OCR 识别核心逻辑 (统一入口)
+        #region 3. OCR 识别核心逻辑
         private async void ProcessImageOcr(Bitmap bmp, Matrix3d transform)
         {
             if (_settings.SelectedOcrEngine == OcrEngineType.Baidu)
@@ -107,7 +115,6 @@ namespace Plugin_ContourMaster.Services
                 ProcessTesseractOcr(bmp, transform);
         }
 
-        // ✨ 修正后的百度 OCR 方法：使用 FormUrlEncodedContent 解决“参数无效”
         private async Task ProcessBaiduOcr(Bitmap bmp, Matrix3d transform)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -115,22 +122,21 @@ namespace Plugin_ContourMaster.Services
             try
             {
                 string token = await GetBaiduAccessToken(_settings.BaiduApiKey, _settings.BaiduSecretKey);
-                if (string.IsNullOrEmpty(token)) throw new Exception("Token 获取失败，请检查 Key。");
+                if (string.IsNullOrEmpty(token)) throw new Exception("Token 获取失败，请检查 API Key。");
 
                 string base64Image;
                 using (MemoryStream ms = new MemoryStream())
                 {
+                    // 使用 80% 质量压缩，防止 Base64 字符串由于像素过高超过百度 4MB 的限制
                     bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                     base64Image = Convert.ToBase64String(ms.ToArray());
                 }
 
-                // ✨ 关键修复：使用标准表单内容格式
-                var postData = new List<KeyValuePair<string, string>> {
-                    new KeyValuePair<string, string>("image", base64Image)
-                };
-                var content = new FormUrlEncodedContent(postData);
+                // ✨ 核心修正：手动构建并 UrlEncode image 参数，解决“参数无效”
+                string requestBody = "image=" + WebUtility.UrlEncode(base64Image);
+                var content = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
 
-                // 百度高精度版接口
+                // 高精度含位置版接口
                 var response = await _httpClient.PostAsync($"https://aip.baidubce.com/rest/2.0/ocr/v1/accurate?access_token={token}", content);
                 string json = await response.Content.ReadAsStringAsync();
 
@@ -153,9 +159,9 @@ namespace Plugin_ContourMaster.Services
                         {
                             string text = item["words"].ToString();
                             var locData = (Dictionary<string, object>)item["location"];
-                            double left = Convert.ToDouble(locData["left"]);
-                            double top = Convert.ToDouble(locData["top"]);
-                            AcadPoint3d worldLoc = new AcadPoint3d(left, bmp.Height - top, 0).TransformBy(transform);
+
+                            AcadPoint3d worldLoc = new AcadPoint3d(Convert.ToDouble(locData["left"]),
+                                                                  bmp.Height - Convert.ToDouble(locData["top"]), 0).TransformBy(transform);
 
                             using (MText mText = new MText())
                             {
@@ -165,12 +171,13 @@ namespace Plugin_ContourMaster.Services
                                 mText.Width = Convert.ToDouble(locData["width"]) * matrixScale;
                                 mText.Layer = "OCR_识别文字";
                                 mText.Attachment = AttachmentPoint.TopLeft;
-                                btr.AppendEntity(mText); tr.AddNewlyCreatedDBObject(mText, true);
+                                btr.AppendEntity(mText);
+                                tr.AddNewlyCreatedDBObject(mText, true);
                             }
                         }
                         tr.Commit();
                     }
-                    ed.WriteMessage("\n[Baidu OCR] 识别完成。");
+                    ed.WriteMessage("\n[Baidu OCR] 识别并原位生成完成。");
                 }
             }
             catch (Exception ex) { ed.WriteMessage($"\n[百度OCR错误] {ex.Message}"); }
@@ -214,20 +221,15 @@ namespace Plugin_ContourMaster.Services
         }
         #endregion
 
-        #region 4. 辅助算法与鉴权
-        // sir-sz/contourmaster-plugin/ContourMaster-Plugin-Master-TXPDFSB/Plugin_ContourMaster/Services/ContourEngine.cs
-
+        #region 4. 辅助算法与基础设施
         private async Task<string> GetBaiduAccessToken(string key, string secret)
         {
-            // ✨ 核心修复：将 &secret= 修改为 &client_secret=
+            // 修正 client_secret 参数名
             string url = $"https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id={key}&client_secret={secret}";
-
             var response = await _httpClient.GetAsync(url);
             string json = await response.Content.ReadAsStringAsync();
-
             var serializer = new JavaScriptSerializer();
             var res = serializer.Deserialize<Dictionary<string, string>>(json);
-
             return res.ContainsKey("access_token") ? res["access_token"] : null;
         }
 
@@ -291,10 +293,6 @@ namespace Plugin_ContourMaster.Services
             return (raw > std[std.Length - 1] * 1.5) ? raw : closest;
         }
 
-        private class OcrWordData { public string Text; public Tesseract.Rect Bounds; public bool Visited = false; }
-        #endregion
-
-        #region 5. OpenCV 算法与 CAD 基础设施
         private List<List<AcadPoint2d>> ExtractContoursFromBitmap(Bitmap bmp, Extents3d ext, double scale, bool onlyHoles)
         {
             List<List<AcadPoint2d>> results = new List<List<AcadPoint2d>>();
@@ -450,6 +448,8 @@ namespace Plugin_ContourMaster.Services
 
         private bool IsMemorySafe(double w, double h, double s, Editor ed) => (w * s < 12000 && h * s < 12000);
         private void CleanMemory() { GC.Collect(); GC.WaitForPendingFinalizers(); }
+
+        private class OcrWordData { public string Text; public Tesseract.Rect Bounds; public bool Visited = false; }
         #endregion
     }
 }
