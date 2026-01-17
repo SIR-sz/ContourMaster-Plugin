@@ -2,7 +2,9 @@
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
-using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.Geometry; // 包含 Point2d, Point3d
+using OpenCvSharp; // 包含 Point, Point2d, Point3d 等
+using OpenCvSharp.Extensions;
 using Plugin_ContourMaster.Models;
 using System;
 using System.Collections.Generic;
@@ -10,6 +12,10 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+// 定义别名以解决冲突
+using AcadPoint2d = Autodesk.AutoCAD.Geometry.Point2d;
+using AcadPoint3d = Autodesk.AutoCAD.Geometry.Point3d;
+using CvPoint = OpenCvSharp.Point;
 
 namespace Plugin_ContourMaster.Services
 {
@@ -18,7 +24,8 @@ namespace Plugin_ContourMaster.Services
         private readonly ContourSettings _settings;
 
         public ContourEngine(ContourSettings settings) => _settings = settings;
-        // 提取实体总范围
+
+        // 1. 提取实体总范围
         private Extents3d GetSelectionExtents(SelectionSet ss)
         {
             Extents3d totalExt = new Extents3d();
@@ -33,62 +40,8 @@ namespace Plugin_ContourMaster.Services
             }
             return totalExt;
         }
-        // CAD 空间下的拉普拉斯平滑 (加权平均法)
-        private List<Point2d> SmoothCadPoints(List<Point2d> pts)
-        {
-            if (pts.Count < 5) return pts;
-            List<Point2d> smoothed = new List<Point2d>(pts.Count) { pts[0] };
-            for (int i = 1; i < pts.Count - 1; i++)
-            {
-                double sx = pts[i - 1].X * 0.2 + pts[i].X * 0.6 + pts[i + 1].X * 0.2;
-                double sy = pts[i - 1].Y * 0.2 + pts[i].Y * 0.6 + pts[i + 1].Y * 0.2;
-                smoothed.Add(new Point2d(sx, sy));
-            }
-            smoothed.Add(pts[pts.Count - 1]);
-            return smoothed;
-        }
-        // CAD 空间下的道格拉斯-普克简化算法
-        private List<Point2d> SimplifyCadPath(List<Point2d> pts, double tol)
-        {
-            if (pts.Count < 3) return pts;
-            int idx = -1; double maxD = 0;
-            for (int i = 1; i < pts.Count - 1; i++)
-            {
-                double d = GetDistancePointLine(pts[i], pts[0], pts[pts.Count - 1]);
-                if (d > maxD) { maxD = d; idx = i; }
-            }
-            if (maxD > tol)
-            {
-                var l = SimplifyCadPath(pts.GetRange(0, idx + 1), tol);
-                var r = SimplifyCadPath(pts.GetRange(idx, pts.Count - idx), tol);
-                l.RemoveAt(l.Count - 1); l.AddRange(r); return l;
-            }
-            return new List<Point2d> { pts[0], pts[pts.Count - 1] };
-        }
-        private void CheckAndCreateLayer(Database db, Transaction tr, string layerName)
-        {
-            LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
-            if (!lt.Has(layerName))
-            {
-                lt.UpgradeOpen();
-                LayerTableRecord ltr = new LayerTableRecord { Name = layerName };
-                // 显式引用 AutoCAD 颜色，防止与 System.Drawing 冲突
-                ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2); // 黄色
-                lt.Add(ltr);
-                tr.AddNewlyCreatedDBObject(ltr, true);
-            }
-        }
 
-        // 配合 SimplifyCadPath 使用的距离计算函数
-        private double GetDistancePointLine(Point2d p, Point2d s, Point2d e)
-        {
-            double area = Math.Abs(0.5 * (s.X * (e.Y - p.Y) + e.X * (p.Y - s.Y) + p.X * (s.Y - e.Y)));
-            double bottom = s.GetDistanceTo(e);
-            if (bottom < 1e-9) return p.GetDistanceTo(s);
-            return (area * 2.0) / bottom;
-        }
-
-        // 修改自
+        // 2. 主处理方法
         public void ProcessContour()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -99,84 +52,58 @@ namespace Plugin_ContourMaster.Services
                 PromptSelectionResult psr = ed.GetSelection(new PromptSelectionOptions { MessageForAdding = "\n请选择要生成轮廓的元素: " });
                 if (psr.Status != PromptStatus.OK) return;
 
-                // 1. 获取选定实体的总范围
                 Extents3d totalExt = GetSelectionExtents(psr.Value);
 
-                // 2. 预计算缩放比例 (基于 3000 像素目标尺寸)
                 int targetSize = 3000;
                 double worldW = totalExt.MaxPoint.X - totalExt.MinPoint.X;
                 double worldH = totalExt.MaxPoint.Y - totalExt.MinPoint.Y;
                 double scale = targetSize / Math.Max(worldW, worldH);
 
-                // 3. 渲染位图 (传递预设好的 scale)
                 using (Bitmap bmp = RasterizeSelection(doc, psr.Value, totalExt, scale))
                 {
                     if (bmp == null) return;
 
-                    int gapRadius = (int)(_settings.SimplifyTolerance * scale);
-                    if (gapRadius < 1) gapRadius = 1;
+                    // 使用 OpenCV 提取轮廓
+                    List<List<AcadPoint2d>> cadContours = ExtractCadContoursWithOpenCv(bmp, totalExt, scale);
 
-                    // 4. 图像处理识别孔洞区域
-                    bool[,] holeMap = IdentifyEnclosedHolesWithMorphology(bmp, gapRadius);
-
-                    // 5. ✨ 直接在世界坐标空间提取轮廓顶点
-                    List<List<Point2d>> cadContours = ExtractCadContours(holeMap, totalExt, scale);
-
-                    // 6. 绘制最终多段线
                     DrawInCad(doc, cadContours);
                 }
 
-                ed.WriteMessage("\n[ContourMaster] 已按准确坐标位置直接生成轮廓。");
+                ed.WriteMessage("\n[ContourMaster] 轮廓生成完毕。已修正命名空间冲突。");
             }
             catch (System.Exception ex) { ed.WriteMessage($"\n[异常] {ex.Message}"); }
         }
 
-        /// <summary>
-        /// 将选中的 CAD 实体渲染为位图，用于后续的像素轮廓提取。
-        /// 此版本已移除 out scale 关键字，改由外部传入，确保全流程坐标一致。
-        /// </summary>
+        // 3. 渲染位图
         private Bitmap RasterizeSelection(Document doc, SelectionSet ss, Extents3d ext, double scale)
         {
-            // 获取实体的世界坐标范围
-            double worldW = ext.MaxPoint.X - ext.MinPoint.X;
-            double worldH = ext.MaxPoint.Y - ext.MinPoint.Y;
-
-            // 预留双边各 50 像素的缓冲区 (共 100 像素)
-            int bmpW = (int)(worldW * scale) + 100;
-            int bmpH = (int)(worldH * scale) + 100;
-
-            // 内存安全防护，防止创建超大位图
-            if (bmpW > 10000) bmpW = 10000;
-            if (bmpH > 10000) bmpH = 10000;
+            int bmpW = (int)((ext.MaxPoint.X - ext.MinPoint.X) * scale) + 100;
+            int bmpH = (int)((ext.MaxPoint.Y - ext.MinPoint.Y) * scale) + 100;
 
             Bitmap bmp = new Bitmap(bmpW, bmpH);
             using (Graphics g = Graphics.FromImage(bmp))
             {
-                // 关键：关闭抗锯齿，确保边缘像素非黑即白，便于形态学识别
                 g.Clear(System.Drawing.Color.Black);
                 g.SmoothingMode = SmoothingMode.None;
 
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
                 {
-                    // 使用 1 像素宽度的白色画笔绘制线条
-                    using (System.Drawing.Pen thinPen = new System.Drawing.Pen(System.Drawing.Color.White, 1f))
+                    using (System.Drawing.Pen thinPen = new System.Drawing.Pen(System.Drawing.Color.White, 1.2f))
                     {
+                        thinPen.Alignment = PenAlignment.Center;
+
                         foreach (SelectedObject so in ss)
                         {
                             Curve curve = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
                             if (curve == null) continue;
 
-                            // 将曲线离散化为线段进行绘制
-                            int segments = 150;
+                            int segments = 200;
                             PointF[] pts = new PointF[segments + 1];
                             double step = (curve.EndParam - curve.StartParam) / segments;
 
                             for (int i = 0; i <= segments; i++)
                             {
-                                Point3d p = curve.GetPointAtParameter(curve.StartParam + step * i);
-
-                                // 映射公式：(世界坐标 - 最小点) * 缩放 + 50 像素偏移
-                                // Y 轴进行翻转以适配位图坐标系
+                                AcadPoint3d p = curve.GetPointAtParameter(curve.StartParam + step * i);
                                 float px = (float)((p.X - ext.MinPoint.X) * scale) + 50f;
                                 float py = (float)((ext.MaxPoint.Y - p.Y) * scale) + 50f;
                                 pts[i] = new PointF(px, py);
@@ -190,211 +117,71 @@ namespace Plugin_ContourMaster.Services
             return bmp;
         }
 
-        // 优化 中的形态学逻辑
-        private bool[,] IdentifyEnclosedHolesWithMorphology(Bitmap bmp, int radius)
+        // 4. OpenCV 提取轮廓 (显式指定点类型解决冲突)
+        private List<List<AcadPoint2d>> ExtractCadContoursWithOpenCv(Bitmap bmp, Extents3d ext, double scale)
         {
-            int w = bmp.Width, h = bmp.Height;
-            bool[,] isLine = ExtractLineMap(bmp); // 提取线条
+            List<List<AcadPoint2d>> results = new List<List<AcadPoint2d>>();
 
-            // 1. 膨胀：封死缺口
-            bool[,] dilated = Dilate(isLine, radius);
-
-            // 2. 种子填充识别外部区域 (代码保持原逻辑)
-            bool[,] isOutside = FloodFillOutside(dilated);
-
-            // 3. 提取内部孔洞区域
-            bool[,] holeMap = new bool[w, h];
-            for (int y = 0; y < h; y++)
-                for (int x = 0; x < w; x++)
-                    holeMap[x, y] = !dilated[x, y] && !isOutside[x, y];
-
-            // ✨ 核心改进：使用 radius + 1 或 radius + 2
-            // 增加 1-2 像素的额外腐蚀，彻底抵消平滑带来的内缩感
-            int compensation = (_settings.SmoothLevel > 5) ? radius + 2 : radius + 1;
-            return ErodeHole(holeMap, compensation);
-        }
-        // 补全：提取像素位图到布尔数组
-        private bool[,] ExtractLineMap(Bitmap bmp)
-        {
-            int w = bmp.Width, h = bmp.Height;
-            bool[,] isLine = new bool[w, h];
-            BitmapData data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            byte[] pixels = new byte[data.Stride * h];
-            Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
-            bmp.UnlockBits(data);
-
-            for (int y = 0; y < h; y++)
+            using (Mat src = bmp.ToMat())
+            using (Mat gray = new Mat())
             {
-                for (int x = 0; x < w; x++)
+                Cv2.CvtColor(src, gray, ColorConversionCodes.BGRA2GRAY);
+
+                using (Mat binary = new Mat())
                 {
-                    // 使用设置中的阈值识别线条
-                    isLine[x, y] = pixels[y * data.Stride + x * 4 + 2] > _settings.Threshold;
-                }
-            }
-            return isLine;
-        }
+                    Cv2.Threshold(gray, binary, _settings.Threshold, 255, ThresholdTypes.Binary);
 
-        // 补全：泛洪算法识别外部空间
-        private bool[,] FloodFillOutside(bool[,] map)
-        {
-            int w = map.GetLength(0), h = map.GetLength(1);
-            bool[,] isOutside = new bool[w, h];
-            Queue<System.Drawing.Point> q = new Queue<System.Drawing.Point>();
+                    CvPoint[][] contours;
+                    HierarchyIndex[] hierarchy;
+                    Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
 
-            // 从图像四周边界注入种子
-            for (int x = 0; x < w; x++) { q.Enqueue(new System.Drawing.Point(x, 0)); q.Enqueue(new System.Drawing.Point(x, h - 1)); }
-            for (int y = 0; y < h; y++) { q.Enqueue(new System.Drawing.Point(0, y)); q.Enqueue(new System.Drawing.Point(w - 1, y)); }
-
-            while (q.Count > 0)
-            {
-                var p = q.Dequeue();
-                if (p.X < 0 || p.X >= w || p.Y < 0 || p.Y >= h || isOutside[p.X, p.Y] || map[p.X, p.Y]) continue;
-                isOutside[p.X, p.Y] = true;
-                q.Enqueue(new System.Drawing.Point(p.X + 1, p.Y)); q.Enqueue(new System.Drawing.Point(p.X - 1, p.Y));
-                q.Enqueue(new System.Drawing.Point(p.X, p.Y + 1)); q.Enqueue(new System.Drawing.Point(p.X, p.Y - 1));
-            }
-            return isOutside;
-        }
-        private bool[,] Dilate(bool[,] source, int r)
-        {
-            int w = source.GetLength(0), h = source.GetLength(1);
-            bool[,] dest = (bool[,])source.Clone();
-            for (int y = r; y < h - r; y++)
-                for (int x = r; x < w - r; x++)
-                    if (source[x, y])
-                        for (int ky = -r; ky <= r; ky++)
-                            for (int kx = -r; kx <= r; kx++)
-                                dest[x + kx, y + ky] = true;
-            return dest;
-        }
-
-        private bool[,] ErodeHole(bool[,] hole, int r)
-        {
-            int w = hole.GetLength(0), h = hole.GetLength(1);
-            bool[,] dest = (bool[,])hole.Clone();
-            for (int y = r; y < h - r; y++)
-                for (int x = r; x < w - r; x++)
-                    if (!hole[x, y])
-                        for (int ky = -r; ky <= r; ky++)
-                            for (int kx = -r; kx <= r; kx++)
-                                if (hole[x + kx, y + ky])
-                                {
-                                    dest[x, y] = true;
-                                    goto NextPixel;
-                                }
-                            NextPixel:;
-            return dest;
-        }
-        // ✨ 新增：拉普拉斯平滑，消除像素点的局部抖动
-        private List<PointF> SmoothPoints(List<PointF> pts)
-        {
-            if (_settings.SmoothLevel <= 0 || pts.Count < 5) return pts;
-
-            List<PointF> smoothed = new List<PointF>(pts.Count);
-            smoothed.Add(pts[0]);
-
-            // 减弱平滑强度，只对局部微小锯齿生效
-            // 使用 0.2/0.6/0.2 的加权平均，比单纯的 1/3 平均更不容易收缩
-            for (int i = 1; i < pts.Count - 1; i++)
-            {
-                float sx = pts[i - 1].X * 0.2f + pts[i].X * 0.6f + pts[i + 1].X * 0.2f;
-                float sy = pts[i - 1].Y * 0.2f + pts[i].Y * 0.6f + pts[i + 1].Y * 0.2f;
-                smoothed.Add(new PointF(sx, sy));
-            }
-
-            smoothed.Add(pts[pts.Count - 1]);
-            return smoothed;
-        }
-
-        private List<List<Point2d>> ExtractCadContours(bool[,] map, Extents3d ext, double scale)
-        {
-            int w = map.GetLength(0), h = map.GetLength(1);
-            List<List<Point2d>> results = new List<List<Point2d>>();
-            bool[,] visited = new bool[w, h];
-
-            // 基于 SmoothLevel 计算 CAD 空间下的简化容差
-            double simplifyTol = (0.5 + (_settings.SmoothLevel * 0.5)) / scale;
-
-            for (int y = 1; y < h - 1; y++)
-            {
-                for (int x = 1; x < w - 1; x++)
-                {
-                    // 识别边界像素
-                    if (map[x, y] && !visited[x, y] && (!map[x - 1, y] || !map[x + 1, y] || !map[x, y - 1] || !map[x, y + 1]))
+                    foreach (var contour in contours)
                     {
-                        var pixelPath = Trace(map, x, y, visited);
-                        if (pixelPath.Count < 10) continue;
+                        if (contour.Length < 5) continue;
 
-                        // 直接将像素路径映射为 CAD 空间点集
-                        List<Point2d> cadPath = new List<Point2d>();
-                        foreach (var p in pixelPath)
+                        double epsilon = 1.0 + (_settings.SmoothLevel * 0.2);
+                        CvPoint[] approx = Cv2.ApproxPolyDP(contour, epsilon, true);
+
+                        List<AcadPoint2d> cadPath = new List<AcadPoint2d>();
+                        foreach (var p in approx)
                         {
-                            // 逆向坐标变换公式：(像素 - 50边距) / 缩放 + 原始基准
-                            // 注意：不在这里添加 0.5 纠偏，因为 Trace 提取的是像素边界索引
-                            double wx = (p.X - 50.0) / scale + ext.MinPoint.X;
-                            double wy = ext.MaxPoint.Y - (p.Y - 50.0) / scale;
-                            cadPath.Add(new Point2d(wx, wy));
+                            // p 是 OpenCV 的 CvPoint (像素坐标)
+                            // 映射到 AutoCAD 的 AcadPoint2d (世界坐标)
+                            double wx = (p.X + 0.5 - 50.0) / scale + ext.MinPoint.X;
+                            double wy = ext.MaxPoint.Y - (p.Y + 0.5 - 50.0) / scale;
+
+                            cadPath.Add(new AcadPoint2d(wx, wy));
                         }
 
-                        // 在 CAD 空间进行平滑和简化
-                        if (_settings.SmoothLevel > 0) cadPath = SmoothCadPoints(cadPath);
-                        results.Add(SimplifyCadPath(cadPath, simplifyTol));
+                        if (_settings.SmoothLevel > 3)
+                        {
+                            cadPath = SmoothCadPoints(cadPath);
+                        }
+
+                        results.Add(cadPath);
                     }
                 }
             }
             return results;
         }
 
-        private List<PointF> Trace(bool[,] map, int sx, int sy, bool[,] v)
+        // 5. 平滑算法 (使用别名 AcadPoint2d)
+        private List<AcadPoint2d> SmoothCadPoints(List<AcadPoint2d> pts)
         {
-            List<PointF> path = new List<PointF>();
-            int[] dx = { -1, -1, 0, 1, 1, 1, 0, -1 }, dy = { 0, -1, -1, -1, 0, 1, 1, 1 };
-            int cx = sx, cy = sy, bx = sx - 1, by = sy;
-            do
-            {
-                path.Add(new PointF(cx, cy)); v[cx, cy] = true;
-                int si = 0;
-                for (int i = 0; i < 8; i++) if (cx + dx[i] == bx && cy + dy[i] == by) { si = i; break; }
-                bool found = false;
-                for (int i = 1; i <= 8; i++)
-                {
-                    int idx = (si + i) % 8, nx = cx + dx[idx], ny = cy + dy[idx];
-                    if (nx >= 0 && nx < map.GetLength(0) && ny >= 0 && ny < map.GetLength(1) && map[nx, ny])
-                    {
-                        bx = cx; by = cy; cx = nx; cy = ny; found = true; break;
-                    }
-                }
-                if (!found) break;
-            } while ((cx != sx || cy != sy) && path.Count < 30000);
-            return path;
-        }
-
-        private List<PointF> Simplify(List<PointF> pts, double tol)
-        {
-            if (pts.Count < 3) return pts;
-            int idx = -1; double maxD = 0;
+            if (pts.Count < 5) return pts;
+            List<AcadPoint2d> smoothed = new List<AcadPoint2d>(pts.Count) { pts[0] };
             for (int i = 1; i < pts.Count - 1; i++)
             {
-                double d = GetDistance(pts[i], pts[0], pts[pts.Count - 1]);
-                if (d > maxD) { maxD = d; idx = i; }
+                double sx = pts[i - 1].X * 0.15 + pts[i].X * 0.7 + pts[i + 1].X * 0.15;
+                double sy = pts[i - 1].Y * 0.15 + pts[i].Y * 0.7 + pts[i + 1].Y * 0.15;
+                smoothed.Add(new AcadPoint2d(sx, sy));
             }
-            if (maxD > tol)
-            {
-                var l = Simplify(pts.GetRange(0, idx + 1), tol); var r = Simplify(pts.GetRange(idx, pts.Count - idx), tol);
-                l.RemoveAt(l.Count - 1); l.AddRange(r); return l;
-            }
-            return new List<PointF> { pts[0], pts[pts.Count - 1] };
+            smoothed.Add(pts[pts.Count - 1]);
+            return smoothed;
         }
 
-        private double GetDistance(PointF p, PointF s, PointF e)
-        {
-            double a = Math.Abs(0.5 * (s.X * (e.Y - p.Y) + e.X * (p.Y - s.Y) + p.X * (s.Y - e.Y)));
-            double b = Math.Sqrt(Math.Pow(s.X - e.X, 2) + Math.Pow(s.Y - e.Y, 2));
-            return b == 0 ? 0 : a / (0.5 * b);
-        }
-
-        // 纯坐标绘制方法
-        private void DrawInCad(Document doc, List<List<Point2d>> contours)
+        // 6. 绘制方法 (使用别名 AcadPoint2d)
+        private void DrawInCad(Document doc, List<List<AcadPoint2d>> contours)
         {
             using (var loc = doc.LockDocument())
             using (Transaction tr = doc.TransactionManager.StartTransaction())
@@ -407,11 +194,31 @@ namespace Plugin_ContourMaster.Services
                 {
                     if (pts.Count < 2) continue;
                     Polyline pl = new Polyline();
-                    for (int i = 0; i < pts.Count; i++) pl.AddVertexAt(i, pts[i], 0, 0, 0);
-                    pl.Closed = true; pl.Layer = layerName; pl.ColorIndex = 256;
-                    btr.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true);
+                    for (int i = 0; i < pts.Count; i++)
+                    {
+                        pl.AddVertexAt(i, pts[i], 0, 0, 0);
+                    }
+                    pl.Closed = true;
+                    pl.Layer = layerName;
+                    pl.ColorIndex = 256;
+                    btr.AppendEntity(pl);
+                    tr.AddNewlyCreatedDBObject(pl, true);
                 }
                 tr.Commit();
+            }
+        }
+
+        private void CheckAndCreateLayer(Database db, Transaction tr, string layerName)
+        {
+            LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+            if (!lt.Has(layerName))
+            {
+                lt.UpgradeOpen();
+                LayerTableRecord ltr = new LayerTableRecord { Name = layerName };
+                // 显式引用 AutoCAD 颜色命名空间
+                ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2);
+                lt.Add(ltr);
+                tr.AddNewlyCreatedDBObject(ltr, true);
             }
         }
     }
