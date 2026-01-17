@@ -9,6 +9,7 @@ namespace Plugin_ContourMaster.Models
     {
         private double _threshold = 128.0;
         private double _simplifyTolerance = 0.5;
+        private int _smoothLevel = 2; // ✨ 新增：平滑等级（0-10）
         private string _layerName = "像素轮廓结果";
 
         public double Threshold
@@ -21,6 +22,12 @@ namespace Plugin_ContourMaster.Models
         {
             get => _simplifyTolerance;
             set { _simplifyTolerance = value; OnPropertyChanged(); }
+        }
+
+        public int SmoothLevel
+        {
+            get => _smoothLevel;
+            set { _smoothLevel = value; OnPropertyChanged(); }
         }
 
         public string LayerName
