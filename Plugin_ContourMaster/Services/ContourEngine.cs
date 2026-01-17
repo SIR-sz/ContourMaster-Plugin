@@ -18,6 +18,7 @@ namespace Plugin_ContourMaster.Services
         private readonly ContourSettings _settings;
 
         public ContourEngine(ContourSettings settings) => _settings = settings;
+        // 提取实体总范围
         private Extents3d GetSelectionExtents(SelectionSet ss)
         {
             Extents3d totalExt = new Extents3d();
@@ -32,11 +33,25 @@ namespace Plugin_ContourMaster.Services
             }
             return totalExt;
         }
+        // CAD 空间下的拉普拉斯平滑 (加权平均法)
+        private List<Point2d> SmoothCadPoints(List<Point2d> pts)
+        {
+            if (pts.Count < 5) return pts;
+            List<Point2d> smoothed = new List<Point2d>(pts.Count) { pts[0] };
+            for (int i = 1; i < pts.Count - 1; i++)
+            {
+                double sx = pts[i - 1].X * 0.2 + pts[i].X * 0.6 + pts[i + 1].X * 0.2;
+                double sy = pts[i - 1].Y * 0.2 + pts[i].Y * 0.6 + pts[i + 1].Y * 0.2;
+                smoothed.Add(new Point2d(sx, sy));
+            }
+            smoothed.Add(pts[pts.Count - 1]);
+            return smoothed;
+        }
+        // CAD 空间下的道格拉斯-普克简化算法
         private List<Point2d> SimplifyCadPath(List<Point2d> pts, double tol)
         {
             if (pts.Count < 3) return pts;
-            int idx = -1;
-            double maxD = 0;
+            int idx = -1; double maxD = 0;
             for (int i = 1; i < pts.Count - 1; i++)
             {
                 double d = GetDistancePointLine(pts[i], pts[0], pts[pts.Count - 1]);
@@ -46,9 +61,7 @@ namespace Plugin_ContourMaster.Services
             {
                 var l = SimplifyCadPath(pts.GetRange(0, idx + 1), tol);
                 var r = SimplifyCadPath(pts.GetRange(idx, pts.Count - idx), tol);
-                l.RemoveAt(l.Count - 1);
-                l.AddRange(r);
-                return l;
+                l.RemoveAt(l.Count - 1); l.AddRange(r); return l;
             }
             return new List<Point2d> { pts[0], pts[pts.Count - 1] };
         }
@@ -83,18 +96,19 @@ namespace Plugin_ContourMaster.Services
 
             try
             {
-                // 1. 选择与范围获取 (保持原有逻辑)
-                PromptSelectionResult psr = ed.GetSelection(new PromptSelectionOptions { MessageForAdding = "\n请选择元素: " });
+                PromptSelectionResult psr = ed.GetSelection(new PromptSelectionOptions { MessageForAdding = "\n请选择要生成轮廓的元素: " });
                 if (psr.Status != PromptStatus.OK) return;
 
+                // 1. 获取选定实体的总范围
                 Extents3d totalExt = GetSelectionExtents(psr.Value);
 
-                // 2. 预计算变换参数 (零偏差映射)
+                // 2. 预计算缩放比例 (基于 3000 像素目标尺寸)
                 int targetSize = 3000;
                 double worldW = totalExt.MaxPoint.X - totalExt.MinPoint.X;
                 double worldH = totalExt.MaxPoint.Y - totalExt.MinPoint.Y;
                 double scale = targetSize / Math.Max(worldW, worldH);
 
+                // 3. 渲染位图 (传递预设好的 scale)
                 using (Bitmap bmp = RasterizeSelection(doc, psr.Value, totalExt, scale))
                 {
                     if (bmp == null) return;
@@ -102,20 +116,19 @@ namespace Plugin_ContourMaster.Services
                     int gapRadius = (int)(_settings.SimplifyTolerance * scale);
                     if (gapRadius < 1) gapRadius = 1;
 
-                    // 3. 图像处理提取孔洞
+                    // 4. 图像处理识别孔洞区域
                     bool[,] holeMap = IdentifyEnclosedHolesWithMorphology(bmp, gapRadius);
 
-                    // ✨ 核心改变：直接在提取阶段生成准确的 CAD 坐标点
-                    // 传入 scale 和 totalExt，让生成过程“心中有坐标”
+                    // 5. ✨ 直接在世界坐标空间提取轮廓顶点
                     List<List<Point2d>> cadContours = ExtractCadContours(holeMap, totalExt, scale);
 
-                    // 4. 直接绘制生成的 CAD 点位
+                    // 6. 绘制最终多段线
                     DrawInCad(doc, cadContours);
                 }
 
-                ed.WriteMessage("\n[像素轮廓专家] 已按准确坐标直接生成轮廓。");
+                ed.WriteMessage("\n[ContourMaster] 已按准确坐标位置直接生成轮廓。");
             }
-            catch (Exception ex) { ed.WriteMessage($"\n[异常] {ex.Message}"); }
+            catch (System.Exception ex) { ed.WriteMessage($"\n[异常] {ex.Message}"); }
         }
 
         /// <summary>
@@ -124,73 +137,51 @@ namespace Plugin_ContourMaster.Services
         /// </summary>
         private Bitmap RasterizeSelection(Document doc, SelectionSet ss, Extents3d ext, double scale)
         {
-            // 计算实体的世界坐标宽度和高度
+            // 获取实体的世界坐标范围
             double worldW = ext.MaxPoint.X - ext.MinPoint.X;
             double worldH = ext.MaxPoint.Y - ext.MinPoint.Y;
 
-            // 根据 scale 计算位图尺寸，并预留双边共 100 像素的边距 (左右各50，上下各50)
+            // 预留双边各 50 像素的缓冲区 (共 100 像素)
             int bmpW = (int)(worldW * scale) + 100;
             int bmpH = (int)(worldH * scale) + 100;
 
-            // 内存安全检查：防止因图形过大或 scale 过高导致创建超大位图
+            // 内存安全防护，防止创建超大位图
             if (bmpW > 10000) bmpW = 10000;
             if (bmpH > 10000) bmpH = 10000;
-            if (bmpW < 100) bmpW = 100; // 确保最小尺寸
-            if (bmpH < 100) bmpH = 100;
 
-            // 创建位图
             Bitmap bmp = new Bitmap(bmpW, bmpH);
             using (Graphics g = Graphics.FromImage(bmp))
             {
-                // 关键设置：关闭抗锯齿，确保提取轮廓时像素边缘清晰，不产生模糊的中间色
+                // 关键：关闭抗锯齿，确保边缘像素非黑即白，便于形态学识别
                 g.Clear(System.Drawing.Color.Black);
                 g.SmoothingMode = SmoothingMode.None;
 
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
                 {
-                    // 使用 1 像素宽度的白色画笔绘制实体
+                    // 使用 1 像素宽度的白色画笔绘制线条
                     using (System.Drawing.Pen thinPen = new System.Drawing.Pen(System.Drawing.Color.White, 1f))
                     {
                         foreach (SelectedObject so in ss)
                         {
-                            // 只处理曲线实体 (Polyline, Line, Circle, Arc 等)
                             Curve curve = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
                             if (curve == null) continue;
 
-                            try
+                            // 将曲线离散化为线段进行绘制
+                            int segments = 150;
+                            PointF[] pts = new PointF[segments + 1];
+                            double step = (curve.EndParam - curve.StartParam) / segments;
+
+                            for (int i = 0; i <= segments; i++)
                             {
-                                // 将曲线离散化为 150 个线段进行绘制
-                                int segments = 150;
-                                PointF[] pts = new PointF[segments + 1];
-                                double curveStart = curve.StartParam;
-                                double curveEnd = curve.EndParam;
-                                double step = (curveEnd - curveStart) / segments;
+                                Point3d p = curve.GetPointAtParameter(curve.StartParam + step * i);
 
-                                for (int i = 0; i <= segments; i++)
-                                {
-                                    // 获取曲线上的点
-                                    Point3d p = curve.GetPointAtParameter(curveStart + step * i);
-
-                                    // 核心坐标变换逻辑：
-                                    // 1. (p.X - ext.MinPoint.X) * scale: 将 CAD 坐标平移到 0,0 并缩放至像素空间
-                                    // 2. + 50: 加上预留的 50 像素左/上边距
-                                    // 3. Y 轴需要翻转，因为 CAD Y 轴向上，位图 Y 轴向下
-                                    float px = (float)((p.X - ext.MinPoint.X) * scale) + 50f;
-                                    float py = (float)((ext.MaxPoint.Y - p.Y) * scale) + 50f;
-
-                                    pts[i] = new PointF(px, py);
-                                }
-
-                                // 绘制离散后的路径
-                                if (pts.Length > 1)
-                                {
-                                    g.DrawLines(thinPen, pts);
-                                }
+                                // 映射公式：(世界坐标 - 最小点) * 缩放 + 50 像素偏移
+                                // Y 轴进行翻转以适配位图坐标系
+                                float px = (float)((p.X - ext.MinPoint.X) * scale) + 50f;
+                                float py = (float)((ext.MaxPoint.Y - p.Y) * scale) + 50f;
+                                pts[i] = new PointF(px, py);
                             }
-                            catch
-                            {
-                                // 忽略无法获取参数的特定实体类型，防止算法中断
-                            }
+                            g.DrawLines(thinPen, pts);
                         }
                     }
                     tr.Commit();
@@ -321,35 +312,33 @@ namespace Plugin_ContourMaster.Services
             List<List<Point2d>> results = new List<List<Point2d>>();
             bool[,] visited = new bool[w, h];
 
-            // 基于 SmoothLevel 动态调整平滑容差
-            double simplifyTol = 0.5 + (_settings.SmoothLevel * 0.5);
+            // 基于 SmoothLevel 计算 CAD 空间下的简化容差
+            double simplifyTol = (0.5 + (_settings.SmoothLevel * 0.5)) / scale;
 
             for (int y = 1; y < h - 1; y++)
             {
                 for (int x = 1; x < w - 1; x++)
                 {
-                    // 寻找边界像素
+                    // 识别边界像素
                     if (map[x, y] && !visited[x, y] && (!map[x - 1, y] || !map[x + 1, y] || !map[x, y - 1] || !map[x, y + 1]))
                     {
-                        // 1. 像素空间追踪
                         var pixelPath = Trace(map, x, y, visited);
                         if (pixelPath.Count < 10) continue;
 
-                        // 2. 路径预平滑 (防止锯齿)
-                        var smoothedPixelPath = SmoothPoints(pixelPath);
-
-                        // 3. ✨ 关键步骤：在简化/生成阶段直接计算 CAD 坐标
+                        // 直接将像素路径映射为 CAD 空间点集
                         List<Point2d> cadPath = new List<Point2d>();
-                        foreach (var p in smoothedPixelPath)
+                        foreach (var p in pixelPath)
                         {
-                            // 零偏差公式：(像素坐标 - 边距) / 缩放 + 原始基准点
+                            // 逆向坐标变换公式：(像素 - 50边距) / 缩放 + 原始基准
+                            // 注意：不在这里添加 0.5 纠偏，因为 Trace 提取的是像素边界索引
                             double wx = (p.X - 50.0) / scale + ext.MinPoint.X;
                             double wy = ext.MaxPoint.Y - (p.Y - 50.0) / scale;
                             cadPath.Add(new Point2d(wx, wy));
                         }
 
-                        // 4. 矢量简化 (Douglas-Peucker 算法，此时 tol 的单位已是 CAD 单位)
-                        results.Add(SimplifyCadPath(cadPath, simplifyTol / scale));
+                        // 在 CAD 空间进行平滑和简化
+                        if (_settings.SmoothLevel > 0) cadPath = SmoothCadPoints(cadPath);
+                        results.Add(SimplifyCadPath(cadPath, simplifyTol));
                     }
                 }
             }
@@ -404,33 +393,23 @@ namespace Plugin_ContourMaster.Services
             return b == 0 ? 0 : a / (0.5 * b);
         }
 
+        // 纯坐标绘制方法
         private void DrawInCad(Document doc, List<List<Point2d>> contours)
         {
             using (var loc = doc.LockDocument())
             using (Transaction tr = doc.TransactionManager.StartTransaction())
             {
-                Database db = doc.Database;
-                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
-
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
                 string layerName = _settings.LayerName ?? "LK_XS";
-                CheckAndCreateLayer(db, tr, layerName);
+                CheckAndCreateLayer(doc.Database, tr, layerName);
 
                 foreach (var pts in contours)
                 {
                     if (pts.Count < 2) continue;
-
                     Polyline pl = new Polyline();
-                    for (int i = 0; i < pts.Count; i++)
-                    {
-                        // 无需再做坐标转换，直接使用传入的 Point2d
-                        pl.AddVertexAt(i, pts[i], 0, 0, 0);
-                    }
-                    pl.Closed = true;
-                    pl.Layer = layerName;
-                    pl.ColorIndex = 256; // ByLayer
-
-                    btr.AppendEntity(pl);
-                    tr.AddNewlyCreatedDBObject(pl, true);
+                    for (int i = 0; i < pts.Count; i++) pl.AddVertexAt(i, pts[i], 0, 0, 0);
+                    pl.Closed = true; pl.Layer = layerName; pl.ColorIndex = 256;
+                    btr.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true);
                 }
                 tr.Commit();
             }
