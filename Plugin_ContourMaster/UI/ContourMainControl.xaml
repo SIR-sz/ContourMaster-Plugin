@@ -92,15 +92,17 @@
                     </Grid>
                 </GroupBox>
 
-                <GroupBox Header="4. 外部文件转 CAD (Beta)" Background="#F9F9F9">
+                <GroupBox Header="4. 外部图像识别 (Beta)" Background="#F9F9F9">
                     <StackPanel>
-                        <TextBlock Text="将图片或 PDF 直接转换为矢量线条" FontSize="10" Foreground="#666666" Margin="2,0,0,8"/>
-                        <UniformGrid Columns="2">
-                            <Button Content="🖼️ 识别图片" Height="34" Margin="0,0,4,0" Click="BtnImage_Click" 
-                                    Background="#E3F2FD" BorderBrush="#BBDEFB" Cursor="Hand"/>
-                            <Button Content="📄 识别 PDF" Height="34" Margin="4,0,0,0" Click="BtnPdf_Click" 
-                                    Background="#F1F8E9" BorderBrush="#DCEDC8" Cursor="Hand"/>
-                        </UniformGrid>
+                        <TextBlock Text="识别 CAD 中已插入的图片参照并原位生成矢量" FontSize="10" Foreground="#666666" Margin="2,0,0,8"/>
+                        <Button Content="🖼️ 识别图像参照" Height="38" Click="BtnImage_Click" 
+                Background="#E3F2FD" BorderBrush="#BBDEFB" Cursor="Hand"/>
+                    </StackPanel>
+                </GroupBox>
+                <GroupBox Header="模式选择" Margin="0,0,0,10">
+                    <StackPanel Orientation="Horizontal" Margin="5">
+                        <RadioButton Content="线条提取" IsChecked="{Binding IsOcrMode, Converter={StaticResource InverseBooleanConverter}}" Margin="0,0,20,0"/>
+                        <RadioButton Content="文字识别 (OCR)" IsChecked="{Binding IsOcrMode}"/>
                     </StackPanel>
                 </GroupBox>
 

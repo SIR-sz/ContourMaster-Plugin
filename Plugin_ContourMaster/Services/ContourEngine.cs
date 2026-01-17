@@ -4,9 +4,7 @@ using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using OpenCvSharp;
-using OpenCvSharp.Dnn;
 using OpenCvSharp.Extensions;
-using PdfiumViewer;
 using Plugin_ContourMaster.Models;
 using System;
 using System.Collections.Generic;
@@ -16,6 +14,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using Tesseract; // 引入 Tesseract
 
 // ✨ 定义别名以彻底解决命名冲突
 using AcadPoint2d = Autodesk.AutoCAD.Geometry.Point2d;
@@ -57,7 +56,6 @@ namespace Plugin_ContourMaster.Services
                 {
                     if (bmp == null) return;
 
-                    // ✨ 修复：对应下方定义的统一提取方法
                     List<List<AcadPoint2d>> cadContours = ExtractContoursFromBitmap(bmp, totalExt, scale, true);
 
                     if (cadContours.Count == 0)
@@ -76,90 +74,57 @@ namespace Plugin_ContourMaster.Services
 
         #endregion
 
-        #region 2. 参照物原位识别逻辑
+        #region 2. 图像参照原位识别逻辑
 
-        public void ProcessReferencedEntity(bool isPdf)
+        public void ProcessReferencedImage()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
 
             try
             {
-                PromptEntityOptions peo = new PromptEntityOptions($"\n请选择要识别的 {(isPdf ? "PDF参照" : "图像参照")}: ");
-                peo.SetRejectMessage("\n选择的对象必须是有效的图像或PDF参照。");
-                peo.AddAllowedClass(typeof(Entity), false);
+                PromptEntityOptions peo = new PromptEntityOptions("\n请选择要识别的图像参照: ");
+                peo.SetRejectMessage("\n选择的对象必须是有效的图像参照。");
+                peo.AddAllowedClass(typeof(RasterImage), false);
 
                 PromptEntityResult per = ed.GetEntity(peo);
                 if (per.Status != PromptStatus.OK) return;
 
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
                 {
-                    Bitmap bmp = null;
-                    Matrix3d pixelToWorld = Matrix3d.Identity;
+                    RasterImage img = tr.GetObject(per.ObjectId, OpenMode.ForRead) as RasterImage;
+                    if (img == null) return;
 
-                    Entity ent = tr.GetObject(per.ObjectId, OpenMode.ForRead) as Entity;
-                    if (ent == null) return;
+                    RasterImageDef imgDef = tr.GetObject(img.ImageDefId, OpenMode.ForRead) as RasterImageDef;
+                    if (!File.Exists(imgDef.ActiveFileName)) throw new Exception("找不到图像源文件。");
 
-                    string className = ent.GetRXClass().Name.ToUpper();
-                    bool isPdfType = className.Contains("PDFUNDERLAY") || className.Contains("PDFREFERENCE");
-
-                    if (isPdf && isPdfType)
+                    using (Bitmap bmp = new Bitmap(imgDef.ActiveFileName))
                     {
-                        CleanMemory();
-                        dynamic pdf = ent;
-                        ObjectId defId = pdf.DefinitionId;
-                        dynamic pdfDef = tr.GetObject(defId, OpenMode.ForRead);
+                        Matrix3d pixelToWorld = GetEntityTransform(img, bmp.Width, bmp.Height);
 
-                        string pdfPath = HostApplicationServices.Current.FindFile(pdfDef.SourceFileName, doc.Database, FindFileHint.Default);
-                        if (!File.Exists(pdfPath)) throw new Exception("找不到PDF源文件。");
-
-                        using (var pdfDoc = PdfDocument.Load(pdfPath))
+                        if (_settings.IsOcrMode)
                         {
-                            int dpi = _settings.PrecisionLevel > 7 ? 300 : 200;
-                            bmp = (Bitmap)pdfDoc.Render(0, dpi, dpi, true);
+                            // 执行 OCR 模式
+                            ProcessImageOcr(bmp, pixelToWorld);
                         }
-
-                        if (bmp.Width > 12000 || bmp.Height > 12000)
+                        else
                         {
-                            bmp.Dispose();
-                            throw new Exception("PDF渲染尺寸过大，请调低精度等级。");
+                            // 执行原有的线条提取模式
+                            List<List<AcadPoint2d>> contours = ExtractContoursReferenced(bmp, pixelToWorld);
+
+                            if (contours.Count > 0)
+                            {
+                                DrawInCadSimple(doc, contours, "图片_原位识别");
+                                ed.WriteMessage($"\n[成功] 已在原位生成 {contours.Count} 条轮廓。");
+                            }
+                            else
+                            {
+                                ed.WriteMessage("\n[提示] 未识别到有效轮廓，请调低“识别阈值”。");
+                            }
                         }
-
-                        pixelToWorld = GetEntityTransform(ent, bmp.Width, bmp.Height);
+                        tr.Commit();
                     }
-                    else if (!isPdf && ent is RasterImage img)
-                    {
-                        RasterImageDef imgDef = tr.GetObject(img.ImageDefId, OpenMode.ForRead) as RasterImageDef;
-                        if (!File.Exists(imgDef.ActiveFileName)) throw new Exception("找不到图像源文件。");
-                        bmp = new Bitmap(imgDef.ActiveFileName);
-                        pixelToWorld = GetEntityTransform(img, bmp.Width, bmp.Height);
-                    }
-                    else
-                    {
-                        ed.WriteMessage($"\n[类型不符] 所选对象类名为: {ent.GetRXClass().Name}");
-                        return;
-                    }
-
-                    if (bmp == null) return;
-
-                    // ✨ 核心调用：原位提取 (带几何简化)
-                    List<List<AcadPoint2d>> contours = ExtractContoursReferenced(bmp, pixelToWorld);
-
-                    if (contours.Count > 0)
-                    {
-                        string layerName = isPdf ? "PDF_原位识别" : "图片_原位识别";
-                        DrawInCadSimple(doc, contours, layerName);
-                        ed.WriteMessage($"\n[成功] 已在原位生成 {contours.Count} 条轮廓。");
-                    }
-                    else
-                    {
-                        ed.WriteMessage("\n[提示] 识别结果为空，请调低“识别阈值”。");
-                    }
-
-                    bmp.Dispose();
-                    tr.Commit();
                 }
-            }
             catch (Exception ex) { ed.WriteMessage($"\n[错误] 操作失败: {ex.Message}"); }
             finally { CleanMemory(); }
         }
@@ -168,7 +133,6 @@ namespace Plugin_ContourMaster.Services
 
         #region 3. 核心算法逻辑
 
-        // 通用提取逻辑：支持 CAD 选区和外部文件模式
         private List<List<AcadPoint2d>> ExtractContoursFromBitmap(Bitmap bmp, Extents3d ext, double scale, bool onlyHoles)
         {
             List<List<AcadPoint2d>> results = new List<List<AcadPoint2d>>();
@@ -203,10 +167,8 @@ namespace Plugin_ContourMaster.Services
                     for (int i = 0; i < contours.Length; i++)
                     {
                         if (onlyHoles && hierarchy[i].Parent == -1) continue;
-                        // ✨ 改进：将面积过滤降至 5
-                        if (contours[i].Length < 4 || Cv2.ContourArea(contours[i]) < 5) continue;
+                        if (contours[i].Length < 4 || Cv2.ContourArea(contours[i]) < 5) continue; // 降低面积过滤保留细节
 
-                        // ✨ 核心修复：当 SmoothLevel 为 0 时不进行任何近似处理
                         double epsilon = _settings.SmoothLevel * 0.2;
                         CvPoint[] approx = epsilon > 0 ? Cv2.ApproxPolyDP(contours[i], epsilon, true) : contours[i];
 
@@ -224,8 +186,69 @@ namespace Plugin_ContourMaster.Services
             }
             return results;
         }
+        private void ProcessImageOcr(Bitmap bmp, Matrix3d transform)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
 
-        // ✨ 修复：合并后的原位识别逻辑，解决了 PDF 卡死问题
+            try
+            {
+                // 1. 初始化 Tesseract 引擎
+                string tessdataPath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "tessdata");
+                using (var engine = new TesseractEngine(tessdataPath, "chi_sim+eng", EngineMode.Default))
+                {
+                    // 2. 将 Bitmap 转换为 Tesseract 识别格式
+                    using (var pix = PixConverter.ToPix(bmp))
+                    using (var page = engine.Process(pix))
+                    {
+                        // 3. 遍历识别结果
+                        using (var iter = page.GetIterator())
+                        {
+                            iter.Begin();
+
+                            using (var loc = doc.LockDocument())
+                            using (Transaction tr = doc.TransactionManager.StartTransaction())
+                            {
+                                var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
+                                CheckAndCreateLayer(doc.Database, tr, "OCR_识别文字");
+
+                                do
+                                {
+                                    if (iter.TryGetBoundingBox(PageIteratorLevel.Word, out Rect bounds))
+                                    {
+                                        string text = iter.GetText(PageIteratorLevel.Word);
+                                        if (string.IsNullOrWhiteSpace(text)) continue;
+
+                                        // 4. 坐标转换：像素点 -> CAD 世界坐标
+                                        // Tesseract 返回的 Y 坐标是自顶向下的，需翻转
+                                        AcadPoint3d pixelLoc = new AcadPoint3d(bounds.X1, bmp.Height - bounds.Y2, 0);
+                                        AcadPoint3d worldLoc = pixelLoc.TransformBy(transform);
+
+                                        // 5. 计算文字高度 (像素高度 * 缩放比)
+                                        double textHeight = bounds.Height * transform.GetScaleExtent();
+
+                                        // 6. 创建 CAD 文字对象
+                                        using (DBText dbText = new DBText())
+                                        {
+                                            dbText.Contents = text;
+                                            dbText.Position = worldLoc;
+                                            dbText.Height = textHeight;
+                                            dbText.Layer = "OCR_识别文字";
+
+                                            btr.AppendEntity(dbText);
+                                            tr.AddNewlyCreatedDBObject(dbText, true);
+                                        }
+                                    }
+                                } while (iter.Next(PageIteratorLevel.Word));
+
+                                tr.Commit();
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { ed.WriteMessage($"\n[OCR错误] {ex.Message}"); }
+        }
         private List<List<AcadPoint2d>> ExtractContoursReferenced(Bitmap bmp, Matrix3d transform)
         {
             List<List<AcadPoint2d>> results = new List<List<AcadPoint2d>>();
@@ -240,24 +263,18 @@ namespace Plugin_ContourMaster.Services
 
                     CvPoint[][] contours;
                     HierarchyIndex[] hierarchy;
-                    // 使用 ApproxSimple 减少基础点数
                     Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
 
                     foreach (var c in contours)
                     {
-                        // ✨ 改进：将面积过滤降至 5，确保细小文字不被过滤
-                        if (c.Length < 4 || Cv2.ContourArea(c) < 5) continue;
+                        if (c.Length < 4 || Cv2.ContourArea(c) < 5) continue; // 降低面积过滤
 
-                        // ✨ 核心修复：平滑度逻辑。如果平滑度为0，则 epsilon 为 0 (完全不简化)
-                        // 这样即使平滑度调到最低，也能看到所有细节
                         double epsilon = _settings.SmoothLevel * 0.2;
-
                         CvPoint[] approx = epsilon > 0 ? Cv2.ApproxPolyDP(c, epsilon, true) : c;
 
                         List<AcadPoint2d> pts = new List<AcadPoint2d>();
                         foreach (var p in approx)
                         {
-                            // 使用别名 AcadPoint3d 避免歧义
                             AcadPoint3d pixelPt = new AcadPoint3d(p.X, bmp.Height - p.Y, 0);
                             AcadPoint3d worldPt = pixelPt.TransformBy(transform);
                             pts.Add(new AcadPoint2d(worldPt.X, worldPt.Y));

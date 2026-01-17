@@ -21,17 +21,12 @@ namespace Plugin_ContourMaster.UI
             RunEngineAction(engine => engine.ProcessContour());
         }
 
+        // 仅保留图片识别事件
         private void BtnImage_Click(object sender, RoutedEventArgs e)
         {
-            // ✨ 统一使用 Settings 属性
-            RunEngineAction(engine => engine.ProcessReferencedEntity(false));
+            RunEngineAction(engine => engine.ProcessReferencedImage());
         }
 
-        private void BtnPdf_Click(object sender, RoutedEventArgs e)
-        {
-            // ✨ 统一使用 Settings 属性
-            RunEngineAction(engine => engine.ProcessReferencedEntity(true));
-        }
 
         private void RunEngineAction(System.Action<ContourEngine> action)
         {
