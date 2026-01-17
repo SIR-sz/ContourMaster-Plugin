@@ -3,11 +3,23 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             xmlns:local="clr-namespace:Plugin_ContourMaster.UI"
+             xmlns:models="clr-namespace:Plugin_ContourMaster.Models"
+             xmlns:sys="clr-namespace:System;assembly=mscorlib"
              mc:Ignorable="d" 
-             d:DesignHeight="700" d:DesignWidth="300"
+             d:DesignHeight="800" d:DesignWidth="300"
              Background="#F0F2F5">
 
     <UserControl.Resources>
+        <local:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
+        <ObjectDataProvider x:Key="OcrEngineEnumValues" MethodName="GetValues" ObjectType="{x:Type sys:Enum}">
+            <ObjectDataProvider.MethodParameters>
+                <x:Type TypeName="models:OcrEngineType"/>
+            </ObjectDataProvider.MethodParameters>
+        </ObjectDataProvider>
+
         <Style x:Key="LabelStyle" TargetType="TextBlock">
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Foreground" Value="#333333"/>
@@ -24,6 +36,13 @@
             <Setter Property="Padding" Value="10"/>
             <Setter Property="BorderBrush" Value="#DCDCDC"/>
             <Setter Property="Background" Value="White"/>
+            <Setter Property="HeaderTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" FontWeight="Bold" Foreground="#444444"/>
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </UserControl.Resources>
 
@@ -33,10 +52,8 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="#444444" Padding="15,12">
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="🎯 轮廓提取工具" Foreground="White" FontSize="14" FontWeight="Bold"/>
-            </StackPanel>
+        <Border Grid.Row="0" Background="#007ACC" Padding="15,12">
+            <TextBlock Text="🎯 ContourMaster 智能轮廓提取" Foreground="White" FontSize="14" FontWeight="Bold"/>
         </Border>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
@@ -45,73 +62,79 @@
                 <GroupBox Header="1. 算法核心参数">
                     <StackPanel>
                         <DockPanel Margin="0,5">
-                            <TextBlock Text="像素精度等级" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding PrecisionLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
-                            <Slider Minimum="1" Maximum="10" Value="{Binding PrecisionLevel}" 
-                                    TickFrequency="1" IsSnapToTickEnabled="True" Margin="12,0"/>
+                            <TextBlock Text="采样精度" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding PrecisionLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
+                            <Slider Minimum="1" Maximum="10" Value="{Binding PrecisionLevel}" TickFrequency="1" IsSnapToTickEnabled="True" Margin="10,0"/>
                         </DockPanel>
 
-                        <DockPanel Margin="0,10,0,5">
-                            <TextBlock Text="识别阈值" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding Threshold, StringFormat='\{0:F0\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
-                            <Slider Minimum="0" Maximum="255" Value="{Binding Threshold}" 
-                                    TickFrequency="5" IsSnapToTickEnabled="True" Margin="12,0"/>
-                        </DockPanel>
-                        <TextBlock Text="* 数值越小对暗色线条越敏感" FontSize="10" Foreground="#888888" Margin="0,2,0,0"/>
-                    </StackPanel>
-                </GroupBox>
-
-                <GroupBox Header="2. 几何形态优化">
-                    <StackPanel>
                         <DockPanel Margin="0,5">
-                            <TextBlock Text="补缝距离 (CAD)" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding SimplifyTolerance, StringFormat='\{0:F2\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
-                            <Slider Minimum="0.01" Maximum="5.0" Value="{Binding SimplifyTolerance}" 
-                                    TickFrequency="0.05" IsSnapToTickEnabled="True" Margin="12,0"/>
+                            <TextBlock Text="识别阈值" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Threshold, StringFormat='\{0:F0\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
+                            <Slider Minimum="0" Maximum="255" Value="{Binding Threshold}" TickFrequency="5" IsSnapToTickEnabled="True" Margin="10,0"/>
                         </DockPanel>
 
-                        <DockPanel Margin="0,10,0,5">
-                            <TextBlock Text="边界平滑等级" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding SmoothLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
-                            <Slider Minimum="0" Maximum="10" Value="{Binding SmoothLevel}" 
-                                    TickFrequency="1" IsSnapToTickEnabled="True" Margin="12,0"/>
+                        <DockPanel Margin="0,5">
+                            <TextBlock Text="补缝距离" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SimplifyTolerance, StringFormat='\{0:F2\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
+                            <Slider Minimum="0.01" Maximum="5.0" Value="{Binding SimplifyTolerance}" TickFrequency="0.05" IsSnapToTickEnabled="True" Margin="10,0"/>
+                        </DockPanel>
+
+                        <DockPanel Margin="0,5">
+                            <TextBlock Text="平滑等级" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SmoothLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
+                            <Slider Minimum="0" Maximum="10" Value="{Binding SmoothLevel}" TickFrequency="1" IsSnapToTickEnabled="True" Margin="10,0"/>
                         </DockPanel>
                     </StackPanel>
                 </GroupBox>
 
-                <GroupBox Header="3. 输出设置">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
+                <GroupBox Header="2. 输出设置">
+                    <DockPanel>
                         <TextBlock Text="生成图层:" Style="{StaticResource LabelStyle}" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                        <TextBox Grid.Column="1" Text="{Binding LayerName}" Height="26" 
-                                 VerticalContentAlignment="Center" Padding="5,0" 
-                                 Background="#FFFFFF" BorderBrush="#CCCCCC"/>
-                    </Grid>
+                        <TextBox Text="{Binding LayerName}" Height="24" VerticalContentAlignment="Center" Padding="5,0"/>
+                    </DockPanel>
                 </GroupBox>
 
-                <GroupBox Header="4. 外部图像识别 (Beta)" Background="#F9F9F9">
+                <GroupBox Header="3. 识别模式配置" Background="#F9F9F9">
                     <StackPanel>
-                        <TextBlock Text="识别 CAD 中已插入的图片参照并原位生成矢量" FontSize="10" Foreground="#666666" Margin="2,0,0,8"/>
-                        <Button Content="🖼️ 识别图像参照" Height="38" Click="BtnImage_Click" 
-                Background="#E3F2FD" BorderBrush="#BBDEFB" Cursor="Hand"/>
-                    </StackPanel>
-                </GroupBox>
-                <GroupBox Header="模式选择" Margin="0,0,0,10">
-                    <StackPanel Orientation="Horizontal" Margin="5">
-                        <RadioButton Content="线条提取" IsChecked="{Binding IsOcrMode, Converter={StaticResource InverseBooleanConverter}}" Margin="0,0,20,0"/>
-                        <RadioButton Content="文字识别 (OCR)" IsChecked="{Binding IsOcrMode}"/>
+                        <UniformGrid Columns="2" Margin="0,5">
+                            <RadioButton Content="线条提取" GroupName="MainMode" 
+                                         IsChecked="{Binding IsOcrMode, Converter={StaticResource InverseBooleanConverter}}" />
+                            <RadioButton Content="文字识别 (OCR)" GroupName="MainMode" 
+                                         IsChecked="{Binding IsOcrMode}" />
+                        </UniformGrid>
+
+                        <StackPanel Visibility="{Binding IsOcrMode, Converter={StaticResource BooleanToVisibilityConverter}}" Margin="0,10,0,0">
+                            <Separator Margin="0,0,0,10"/>
+                            <TextBlock Text="OCR 引擎选择" Style="{StaticResource LabelStyle}" FontSize="11"/>
+                            <ComboBox SelectedItem="{Binding SelectedOcrEngine}" 
+                                      ItemsSource="{Binding Source={StaticResource OcrEngineEnumValues}}" Height="26" Margin="0,0,0,8"/>
+
+                            <StackPanel x:Name="BaiduConfigArea">
+                                <StackPanel.Style>
+                                    <Style TargetType="StackPanel">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SelectedOcrEngine}" Value="Baidu">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </StackPanel.Style>
+                                <TextBlock Text="Baidu API Key" FontSize="10" Foreground="#666666"/>
+                                <TextBox Text="{Binding BaiduApiKey}" Margin="0,2,0,8"/>
+                                <TextBlock Text="Baidu Secret Key" FontSize="10" Foreground="#666666"/>
+                                <TextBox Text="{Binding BaiduSecretKey}" Margin="0,2"/>
+                            </StackPanel>
+                        </StackPanel>
                     </StackPanel>
                 </GroupBox>
 
                 <StackPanel Margin="0,10,0,0">
-                    <Button Content="🚀 开始提取轮廓" Height="48" 
-                            Background="#007ACC" Foreground="White" 
-                            FontSize="15" FontWeight="Bold" 
-                            BorderThickness="0" Cursor="Hand"
-                            Click="BtnExecute_Click">
+                    <Button Content="🖼️ 识别图像参照" Height="40" Click="BtnImage_Click" 
+                            Background="#E3F2FD" BorderBrush="#BBDEFB" Margin="0,0,0,10"/>
+
+                    <Button Content="🚀 开始矢量提取" Height="50" Click="BtnExecute_Click"
+                            Background="#007ACC" Foreground="White" FontSize="15" FontWeight="Bold" BorderThickness="0">
                         <Button.Resources>
                             <Style TargetType="Border">
                                 <Setter Property="CornerRadius" Value="6"/>
@@ -119,9 +142,7 @@
                         </Button.Resources>
                     </Button>
 
-                    <TextBlock Text="提示：选中线条后按回车键执行" 
-                               HorizontalAlignment="Center" Margin="0,12,0,0" 
-                               Foreground="#777777" FontSize="11"/>
+                    <TextBlock Text="提示：图像识别需先点击“识别图像参照”" HorizontalAlignment="Center" Margin="0,10" Foreground="#888888" FontSize="11"/>
                 </StackPanel>
 
             </StackPanel>

@@ -12,10 +12,13 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using Tesseract; // 引入 Tesseract
-
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
+using Tesseract;
 // ✨ 定义别名以彻底解决命名冲突
 using AcadPoint2d = Autodesk.AutoCAD.Geometry.Point2d;
 using AcadPoint3d = Autodesk.AutoCAD.Geometry.Point3d;
@@ -26,10 +29,11 @@ namespace Plugin_ContourMaster.Services
     public class ContourEngine
     {
         private readonly ContourSettings _settings;
+        private static readonly HttpClient _httpClient = new HttpClient();
 
         public ContourEngine(ContourSettings settings) => _settings = settings;
 
-        #region 1. CAD 选区识别逻辑
+        #region 1. CAD 选区识别逻辑 (矢量转轮廓)
 
         public void ProcessContour()
         {
@@ -104,34 +108,246 @@ namespace Plugin_ContourMaster.Services
 
                         if (_settings.IsOcrMode)
                         {
-                            // 执行 OCR 模式
+                            // 执行 OCR 识别模式 (异步分发)
                             ProcessImageOcr(bmp, pixelToWorld);
                         }
                         else
                         {
-                            // 执行原有的线条提取模式
+                            // 执行线条提取模式
                             List<List<AcadPoint2d>> contours = ExtractContoursReferenced(bmp, pixelToWorld);
-
                             if (contours.Count > 0)
                             {
                                 DrawInCadSimple(doc, contours, "图片_原位识别");
                                 ed.WriteMessage($"\n[成功] 已在原位生成 {contours.Count} 条轮廓。");
                             }
-                            else
-                            {
-                                ed.WriteMessage("\n[提示] 未识别到有效轮廓，请调低“识别阈值”。");
-                            }
                         }
-                        tr.Commit();
                     }
+                    tr.Commit();
                 }
+            }
             catch (Exception ex) { ed.WriteMessage($"\n[错误] 操作失败: {ex.Message}"); }
             finally { CleanMemory(); }
         }
 
         #endregion
 
-        #region 3. 核心算法逻辑
+        #region 3. OCR 识别核心逻辑 (统一引擎分发)
+
+        private async void ProcessImageOcr(Bitmap bmp, Matrix3d transform)
+        {
+            if (_settings.SelectedOcrEngine == OcrEngineType.Baidu)
+            {
+                await ProcessBaiduOcr(bmp, transform);
+            }
+            else
+            {
+                ProcessTesseractOcr(bmp, transform);
+            }
+        }
+
+        private async Task ProcessBaiduOcr(Bitmap bmp, Matrix3d transform)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+
+            try
+            {
+                // 1. 获取 Token
+                string accessToken = await GetBaiduAccessToken(_settings.BaiduApiKey, _settings.BaiduSecretKey);
+                if (string.IsNullOrEmpty(accessToken)) throw new Exception("获取百度授权Token失败，请检查 Key 是否正确。");
+
+                // 2. 图像转 Base64 (JPG压缩减小体积，避免超限)
+                string base64Image;
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    if (ms.Length > 4 * 1024 * 1024)
+                        throw new Exception("图片体积过大，请在设置中调低“采样精度等级”后再试。");
+                    base64Image = Convert.ToBase64String(ms.ToArray());
+                }
+
+                // 3. 构建请求体 (改用 StringContent 避免 FormUrlEncoded 长度限制)
+                string body = "image=" + WebUtility.UrlEncode(base64Image);
+                var content = new StringContent(body, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
+
+                // 4. 调用百度接口 (使用高精度含位置版)
+                var response = await _httpClient.PostAsync("https://aip.baidubce.com/rest/2.0/ocr/v1/accurate?access_token=" + accessToken, content);
+                string json = await response.Content.ReadAsStringAsync();
+
+                var serializer = new JavaScriptSerializer();
+                var result = serializer.Deserialize<Dictionary<string, object>>(json);
+
+                // 5. 错误判定
+                if (result.ContainsKey("error_code"))
+                {
+                    string msg = result.ContainsKey("error_msg") ? result["error_msg"].ToString() : "未知错误";
+                    throw new Exception($"百度返回错误: {msg} (代码:{result["error_code"]})");
+                }
+
+                if (result.ContainsKey("words_result"))
+                {
+                    using (var loc = doc.LockDocument())
+                    using (Transaction tr = doc.TransactionManager.StartTransaction())
+                    {
+                        var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
+                        CheckAndCreateLayer(doc.Database, tr, "OCR_识别文字");
+                        double matrixScale = new Vector3d(transform[0, 0], transform[1, 0], transform[2, 0]).Length;
+
+                        foreach (Dictionary<string, object> item in (Array)result["words_result"])
+                        {
+                            string text = item["words"].ToString();
+                            var locData = (Dictionary<string, object>)item["location"];
+
+                            // 转换像素到世界坐标
+                            double left = Convert.ToDouble(locData["left"]);
+                            double top = Convert.ToDouble(locData["top"]);
+                            double h = Convert.ToDouble(locData["height"]);
+                            double w = Convert.ToDouble(locData["width"]);
+
+                            AcadPoint3d worldLoc = new AcadPoint3d(left, bmp.Height - top, 0).TransformBy(transform);
+
+                            using (MText mText = new MText())
+                            {
+                                mText.Contents = text;
+                                mText.Location = worldLoc;
+                                mText.TextHeight = SnapToStandardHeight(h * matrixScale);
+                                mText.Width = w * matrixScale;
+                                mText.Layer = "OCR_识别文字";
+                                mText.Attachment = AttachmentPoint.TopLeft;
+
+                                btr.AppendEntity(mText);
+                                tr.AddNewlyCreatedDBObject(mText, true);
+                            }
+                        }
+                        tr.Commit();
+                    }
+                    ed.WriteMessage("\n[Baidu OCR] 识别并原位绘制完成。");
+                }
+            }
+            catch (Exception ex) { ed.WriteMessage($"\n[百度OCR错误] {ex.Message}"); }
+        }
+
+        private void ProcessTesseractOcr(Bitmap bmp, Matrix3d transform)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            try
+            {
+                string tessdataPath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "tessdata");
+                using (var engine = new TesseractEngine(tessdataPath, "chi_sim+eng", EngineMode.Default))
+                using (var pix = PixConverter.ToPix(bmp))
+                using (var page = engine.Process(pix))
+                using (var iter = page.GetIterator())
+                {
+                    iter.Begin();
+                    var words = new List<OcrWordData>();
+                    do
+                    {
+                        if (iter.TryGetBoundingBox(PageIteratorLevel.Word, out Tesseract.Rect b))
+                        {
+                            string txt = iter.GetText(PageIteratorLevel.Word);
+                            if (!string.IsNullOrWhiteSpace(txt))
+                                words.Add(new OcrWordData { Text = txt.Trim(), Bounds = b });
+                        }
+                    } while (iter.Next(PageIteratorLevel.Word));
+
+                    if (words.Count == 0) return;
+
+                    var groups = ClusterWords(words);
+                    using (var loc = doc.LockDocument())
+                    using (Transaction tr = doc.TransactionManager.StartTransaction())
+                    {
+                        var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
+                        CheckAndCreateLayer(doc.Database, tr, "OCR_识别文字");
+                        double mScale = new Vector3d(transform[0, 0], transform[1, 0], transform[2, 0]).Length;
+                        foreach (var g in groups) CreateMTextFromWordGroup(tr, btr, g, bmp.Height, transform, mScale);
+                        tr.Commit();
+                    }
+                    ed.WriteMessage("\n[Tesseract] 文字识别完成。");
+                }
+            }
+            catch (Exception ex) { ed.WriteMessage($"\n[Tesseract错误] {ex.Message}"); }
+        }
+
+        #endregion
+
+        #region 4. 辅助算法 (聚类/吸附/鉴权)
+
+        private List<List<OcrWordData>> ClusterWords(List<OcrWordData> words)
+        {
+            var clusters = new List<List<OcrWordData>>();
+            for (int i = 0; i < words.Count; i++)
+            {
+                if (words[i].Visited) continue;
+                var group = new List<OcrWordData>();
+                var queue = new Queue<OcrWordData>();
+                words[i].Visited = true; queue.Enqueue(words[i]);
+
+                while (queue.Count > 0)
+                {
+                    var node = queue.Dequeue(); group.Add(node);
+                    foreach (var other in words)
+                    {
+                        if (other.Visited) continue;
+                        double threshold = node.Bounds.Height * 1.1;
+                        double dx = Math.Max(0, Math.Max(other.Bounds.X1 - node.Bounds.X2, node.Bounds.X1 - other.Bounds.X2));
+                        double dy = Math.Max(0, Math.Max(other.Bounds.Y1 - node.Bounds.Y2, node.Bounds.Y1 - other.Bounds.Y2));
+                        if ((dy <= 0 && dx < threshold * 1.5) || (dx <= 0 && dy < threshold))
+                        {
+                            other.Visited = true; queue.Enqueue(other);
+                        }
+                    }
+                }
+                clusters.Add(group);
+            }
+            return clusters;
+        }
+
+        private void CreateMTextFromWordGroup(Transaction tr, BlockTableRecord btr, List<OcrWordData> group, int bmpH, Matrix3d trans, double scale)
+        {
+            group.Sort((a, b) => a.Bounds.Y1 == b.Bounds.Y1 ? a.Bounds.X1.CompareTo(b.Bounds.X1) : a.Bounds.Y1.CompareTo(b.Bounds.Y1));
+            int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue;
+            double totalH = 0;
+            foreach (var w in group)
+            {
+                minX = Math.Min(minX, w.Bounds.X1); minY = Math.Min(minY, w.Bounds.Y1);
+                maxX = Math.Max(maxX, w.Bounds.X2); totalH += w.Bounds.Height;
+            }
+            AcadPoint3d worldLoc = new AcadPoint3d(minX, bmpH - minY, 0).TransformBy(trans);
+            using (MText mText = new MText())
+            {
+                mText.Contents = string.Join(" ", group.ConvertAll(w => w.Text));
+                mText.Location = worldLoc;
+                mText.TextHeight = SnapToStandardHeight((totalH / group.Count) * scale);
+                mText.Layer = "OCR_识别文字";
+                mText.Width = (maxX - minX) * scale;
+                mText.Attachment = AttachmentPoint.TopLeft;
+                btr.AppendEntity(mText); tr.AddNewlyCreatedDBObject(mText, true);
+            }
+        }
+
+        private double SnapToStandardHeight(double raw)
+        {
+            double[] std = { 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 7.0, 10.0, 15.0, 20.0 };
+            double closest = std[0], min = Math.Abs(raw - std[0]);
+            foreach (var h in std) { double d = Math.Abs(raw - h); if (d < min) { min = d; closest = h; } }
+            return (raw > std[std.Length - 1] * 1.5) ? raw : closest;
+        }
+
+        private async Task<string> GetBaiduAccessToken(string key, string secret)
+        {
+            string url = $"https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id={key}&client_secret={secret}";
+            var response = await _httpClient.GetAsync(url);
+            string json = await response.Content.ReadAsStringAsync();
+            var res = new JavaScriptSerializer().Deserialize<Dictionary<string, string>>(json);
+            return res.ContainsKey("access_token") ? res["access_token"] : null;
+        }
+
+        private class OcrWordData { public string Text; public Tesseract.Rect Bounds; public bool Visited = false; }
+
+        #endregion
+
+        #region 5. OpenCV 核心算法
 
         private List<List<AcadPoint2d>> ExtractContoursFromBitmap(Bitmap bmp, Extents3d ext, double scale, bool onlyHoles)
         {
@@ -142,113 +358,39 @@ namespace Plugin_ContourMaster.Services
                 Cv2.CvtColor(src, gray, ColorConversionCodes.BGRA2GRAY);
                 using (Mat binary = new Mat())
                 {
-                    int thresholdValue = (int)Math.Max(10.0, Math.Min(240.0, _settings.Threshold));
-                    Cv2.Threshold(gray, binary, thresholdValue, 255, ThresholdTypes.Binary);
-
-                    if (!onlyHoles && Cv2.CountNonZero(binary) > (binary.Rows * binary.Cols / 2))
-                        Cv2.BitwiseNot(binary, binary);
+                    Cv2.Threshold(gray, binary, _settings.Threshold, 255, ThresholdTypes.Binary);
+                    if (!onlyHoles && Cv2.CountNonZero(binary) > (binary.Rows * binary.Cols / 2)) Cv2.BitwiseNot(binary, binary);
 
                     int kSize = (int)Math.Ceiling(_settings.SimplifyTolerance * scale * 1.2);
                     if (kSize < 3) kSize = 3; if (kSize % 2 == 0) kSize++;
-                    kSize = Math.Min(kSize, 101);
+                    using (Mat k = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(Math.Min(kSize, 101), Math.Min(kSize, 101))))
+                        Cv2.MorphologyEx(binary, binary, MorphTypes.Close, k);
 
-                    using (Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(kSize, kSize)))
-                    {
-                        Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel);
-                    }
-
-                    CvPoint[][] contours;
-                    HierarchyIndex[] hierarchy;
-                    var mode = onlyHoles ? RetrievalModes.Tree : RetrievalModes.List;
-                    Cv2.FindContours(binary, out contours, out hierarchy, mode, ContourApproximationModes.ApproxSimple);
-
+                    CvPoint[][] contours; HierarchyIndex[] hierarchy;
+                    Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxNone);
                     if (contours == null) return results;
 
                     for (int i = 0; i < contours.Length; i++)
                     {
                         if (onlyHoles && hierarchy[i].Parent == -1) continue;
-                        if (contours[i].Length < 4 || Cv2.ContourArea(contours[i]) < 5) continue; // 降低面积过滤保留细节
-
+                        if (contours[i].Length < 4 || Cv2.ContourArea(contours[i]) < 5) continue;
                         double epsilon = _settings.SmoothLevel * 0.2;
                         CvPoint[] approx = epsilon > 0 ? Cv2.ApproxPolyDP(contours[i], epsilon, true) : contours[i];
-
-                        List<AcadPoint2d> cadPath = new List<AcadPoint2d>();
+                        List<AcadPoint2d> path = new List<AcadPoint2d>();
                         foreach (var p in approx)
                         {
                             double offset = onlyHoles ? 50.0 : 0.0;
                             double wx = (p.X + 0.5 - offset) / scale + ext.MinPoint.X;
                             double wy = ext.MaxPoint.Y - (p.Y + 0.5 - offset) / scale;
-                            cadPath.Add(new AcadPoint2d(wx, wy));
+                            path.Add(new AcadPoint2d(wx, wy));
                         }
-                        results.Add(cadPath);
+                        results.Add(path);
                     }
                 }
             }
             return results;
         }
-        private void ProcessImageOcr(Bitmap bmp, Matrix3d transform)
-        {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = doc.Editor;
 
-            try
-            {
-                // 1. 初始化 Tesseract 引擎
-                string tessdataPath = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "tessdata");
-                using (var engine = new TesseractEngine(tessdataPath, "chi_sim+eng", EngineMode.Default))
-                {
-                    // 2. 将 Bitmap 转换为 Tesseract 识别格式
-                    using (var pix = PixConverter.ToPix(bmp))
-                    using (var page = engine.Process(pix))
-                    {
-                        // 3. 遍历识别结果
-                        using (var iter = page.GetIterator())
-                        {
-                            iter.Begin();
-
-                            using (var loc = doc.LockDocument())
-                            using (Transaction tr = doc.TransactionManager.StartTransaction())
-                            {
-                                var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
-                                CheckAndCreateLayer(doc.Database, tr, "OCR_识别文字");
-
-                                do
-                                {
-                                    if (iter.TryGetBoundingBox(PageIteratorLevel.Word, out Rect bounds))
-                                    {
-                                        string text = iter.GetText(PageIteratorLevel.Word);
-                                        if (string.IsNullOrWhiteSpace(text)) continue;
-
-                                        // 4. 坐标转换：像素点 -> CAD 世界坐标
-                                        // Tesseract 返回的 Y 坐标是自顶向下的，需翻转
-                                        AcadPoint3d pixelLoc = new AcadPoint3d(bounds.X1, bmp.Height - bounds.Y2, 0);
-                                        AcadPoint3d worldLoc = pixelLoc.TransformBy(transform);
-
-                                        // 5. 计算文字高度 (像素高度 * 缩放比)
-                                        double textHeight = bounds.Height * transform.GetScaleExtent();
-
-                                        // 6. 创建 CAD 文字对象
-                                        using (DBText dbText = new DBText())
-                                        {
-                                            dbText.Contents = text;
-                                            dbText.Position = worldLoc;
-                                            dbText.Height = textHeight;
-                                            dbText.Layer = "OCR_识别文字";
-
-                                            btr.AppendEntity(dbText);
-                                            tr.AddNewlyCreatedDBObject(dbText, true);
-                                        }
-                                    }
-                                } while (iter.Next(PageIteratorLevel.Word));
-
-                                tr.Commit();
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex) { ed.WriteMessage($"\n[OCR错误] {ex.Message}"); }
-        }
         private List<List<AcadPoint2d>> ExtractContoursReferenced(Bitmap bmp, Matrix3d transform)
         {
             List<List<AcadPoint2d>> results = new List<List<AcadPoint2d>>();
@@ -260,26 +402,20 @@ namespace Plugin_ContourMaster.Services
                 {
                     Cv2.Threshold(gray, binary, _settings.Threshold, 255, ThresholdTypes.Binary);
                     if (Cv2.CountNonZero(binary) > (binary.Rows * binary.Cols / 2)) Cv2.BitwiseNot(binary, binary);
-
-                    CvPoint[][] contours;
-                    HierarchyIndex[] hierarchy;
-                    Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
-
-                    foreach (var c in contours)
+                    CvPoint[][] c; HierarchyIndex[] h;
+                    Cv2.FindContours(binary, out c, out h, RetrievalModes.List, ContourApproximationModes.ApproxSimple);
+                    foreach (var pts in c)
                     {
-                        if (c.Length < 4 || Cv2.ContourArea(c) < 5) continue; // 降低面积过滤
-
-                        double epsilon = _settings.SmoothLevel * 0.2;
-                        CvPoint[] approx = epsilon > 0 ? Cv2.ApproxPolyDP(c, epsilon, true) : c;
-
-                        List<AcadPoint2d> pts = new List<AcadPoint2d>();
+                        if (pts.Length < 4 || Cv2.ContourArea(pts) < 5) continue;
+                        double eps = _settings.SmoothLevel * 0.2;
+                        CvPoint[] approx = eps > 0 ? Cv2.ApproxPolyDP(pts, eps, true) : pts;
+                        List<AcadPoint2d> res = new List<AcadPoint2d>();
                         foreach (var p in approx)
                         {
-                            AcadPoint3d pixelPt = new AcadPoint3d(p.X, bmp.Height - p.Y, 0);
-                            AcadPoint3d worldPt = pixelPt.TransformBy(transform);
-                            pts.Add(new AcadPoint2d(worldPt.X, worldPt.Y));
+                            AcadPoint3d world = new AcadPoint3d(p.X, bmp.Height - p.Y, 0).TransformBy(transform);
+                            res.Add(new AcadPoint2d(world.X, world.Y));
                         }
-                        results.Add(pts);
+                        results.Add(res);
                     }
                 }
             }
@@ -288,204 +424,110 @@ namespace Plugin_ContourMaster.Services
 
         #endregion
 
-        #region 4. 坐标转换与纠偏逻辑
+        #region 6. 基础设施
 
         private Matrix3d GetEntityTransform(Entity ent, int imgW, int imgH)
         {
             Extents3d ext = ent.GeometricExtents;
-            double cadW = ext.MaxPoint.X - ext.MinPoint.X;
-            double cadH = ext.MaxPoint.Y - ext.MinPoint.Y;
-            double scX = cadW / imgW;
-            double scY = cadH / imgH;
+            double scX = (ext.MaxPoint.X - ext.MinPoint.X) / imgW;
             return Matrix3d.Displacement(ext.MinPoint.GetAsVector()) * Matrix3d.Scaling(scX, ext.MinPoint);
         }
 
-        private AcadPoint2d SnapPointToOriginalCurves(AcadPoint2d pt, SelectionSet originalSs, Transaction tr, double pixelSize)
-        {
-            AcadPoint3d pt3d = new AcadPoint3d(pt.X, pt.Y, 0);
-            double snapThreshold = Math.Max(pixelSize * 6.0, _settings.SimplifyTolerance * 1.5);
-            double searchThreshold = snapThreshold + (pixelSize * 2.0);
-
-            List<Curve> curves = new List<Curve>();
-            List<AcadPoint3d> criticalPts = new List<AcadPoint3d>();
-
-            foreach (SelectedObject so in originalSs)
-            {
-                Curve c = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
-                if (c == null) continue;
-                try
-                {
-                    Extents3d ex = c.GeometricExtents;
-                    if (pt.X < ex.MinPoint.X - searchThreshold || pt.X > ex.MaxPoint.X + searchThreshold ||
-                        pt.Y < ex.MinPoint.Y - searchThreshold || pt.Y > ex.MaxPoint.Y + searchThreshold) continue;
-                    curves.Add(c); criticalPts.Add(c.StartPoint); criticalPts.Add(c.EndPoint);
-                }
-                catch { }
-            }
-
-            AcadPoint3d bestSnap = pt3d; double minDist = snapThreshold; bool found = false;
-            foreach (AcadPoint3d cp in criticalPts)
-            {
-                double d = pt3d.DistanceTo(cp);
-                if (d < minDist) { minDist = d; bestSnap = cp; found = true; }
-            }
-            if (curves.Count >= 2)
-            {
-                for (int i = 0; i < curves.Count; i++)
-                {
-                    for (int j = i + 1; j < curves.Count; j++)
-                    {
-                        using (Point3dCollection ips = new Point3dCollection())
-                        {
-                            curves[i].IntersectWith(curves[j], Intersect.OnBothOperands, ips, IntPtr.Zero, IntPtr.Zero);
-                            foreach (AcadPoint3d ip in ips)
-                            {
-                                double d = pt3d.DistanceTo(ip);
-                                if (d < minDist) { minDist = d; bestSnap = ip; found = true; }
-                            }
-                        }
-                    }
-                }
-            }
-            if (found) return new AcadPoint2d(bestSnap.X, bestSnap.Y);
-            foreach (Curve c in curves)
-            {
-                try
-                {
-                    AcadPoint3d close = c.GetClosestPointTo(pt3d, false);
-                    double d = pt3d.DistanceTo(close);
-                    if (d < minDist) { minDist = d; bestSnap = close; }
-                }
-                catch { }
-            }
-            return new AcadPoint2d(bestSnap.X, bestSnap.Y);
-        }
-
-        #endregion
-
-        #region 5. 辅助与绘制方法
-
-        private Extents3d GetSelectionExtents(SelectionSet ss)
-        {
-            Extents3d totalExt = new Extents3d();
-            using (Transaction tr = Application.DocumentManager.MdiActiveDocument.TransactionManager.StartTransaction())
-            {
-                foreach (SelectedObject so in ss)
-                {
-                    Entity ent = (Entity)tr.GetObject(so.ObjectId, OpenMode.ForRead);
-                    try { totalExt.AddExtents(ent.GeometricExtents); } catch { }
-                }
-                tr.Commit();
-            }
-            return totalExt;
-        }
-
-        private bool IsMemorySafe(double w, double h, double s, Editor ed)
-        {
-            int bw = (int)(w * s) + 100; int bh = (int)(h * s) + 100;
-            if (bw > 12000 || bh > 12000)
-            {
-                Application.ShowAlertDialog("❌ 精度过高，可能导致内存溢出。");
-                return false;
-            }
-            return true;
-        }
-
-        private Bitmap RasterizeSelection(Document doc, SelectionSet ss, Extents3d ext, double scale)
-        {
-            int bw = (int)((ext.MaxPoint.X - ext.MinPoint.X) * scale) + 100;
-            int bh = (int)((ext.MaxPoint.Y - ext.MinPoint.Y) * scale) + 100;
-            if (bw <= 0 || bh <= 0) return null;
-
-            Bitmap bmp = new Bitmap(bw, bh);
-            using (Graphics g = Graphics.FromImage(bmp))
-            {
-                g.Clear(System.Drawing.Color.Black);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (Transaction tr = doc.TransactionManager.StartTransaction())
-                {
-                    using (System.Drawing.Pen p = new System.Drawing.Pen(System.Drawing.Color.White, 3.0f))
-                    {
-                        foreach (SelectedObject so in ss)
-                        {
-                            Curve c = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
-                            if (c == null) continue;
-                            int segs = 200; double step = (c.EndParam - c.StartParam) / segs;
-                            List<PointF> pts = new List<PointF>();
-                            for (int i = 0; i <= segs; i++)
-                            {
-                                AcadPoint3d pt = c.GetPointAtParameter(c.StartParam + step * i);
-                                pts.Add(new PointF((float)((pt.X - ext.MinPoint.X) * scale) + 50f, (float)((ext.MaxPoint.Y - pt.Y) * scale) + 50f));
-                            }
-                            if (pts.Count > 1) g.DrawLines(p, pts.ToArray());
-                        }
-                    }
-                    tr.Commit();
-                }
-            }
-            return bmp;
-        }
-
-        private void DrawInCad(Document doc, List<List<AcadPoint2d>> contours, SelectionSet originalLines, double scale)
-        {
-            double pixelSize = 1.0 / scale;
-            using (var loc = doc.LockDocument())
-            using (Transaction tr = doc.TransactionManager.StartTransaction())
-            {
-                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
-                string layerName = _settings.LayerName ?? "LK_XS";
-                CheckAndCreateLayer(doc.Database, tr, layerName);
-
-                foreach (var pts in contours)
-                {
-                    Polyline pl = new Polyline();
-                    int idx = 0; AcadPoint2d lastAdded = new AcadPoint2d(double.NaN, double.NaN);
-                    foreach (var p in pts)
-                    {
-                        AcadPoint2d snapped = SnapPointToOriginalCurves(p, originalLines, tr, pixelSize);
-                        if (idx > 0 && snapped.GetDistanceTo(lastAdded) < 0.001) continue;
-                        pl.AddVertexAt(idx++, snapped, 0, 0, 0); lastAdded = snapped;
-                    }
-                    if (pl.NumberOfVertices > 2)
-                    {
-                        if (pl.GetPoint2dAt(0).GetDistanceTo(pl.GetPoint2dAt(pl.NumberOfVertices - 1)) < 0.01)
-                            pl.RemoveVertexAt(pl.NumberOfVertices - 1);
-                        pl.Closed = true;
-                    }
-                    pl.Layer = layerName; btr.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true);
-                }
-                tr.Commit();
-            }
-        }
-
-        private void DrawInCadSimple(Document doc, List<List<AcadPoint2d>> contours, string layerName)
+        private void DrawInCad(Document doc, List<List<AcadPoint2d>> contours, SelectionSet original, double scale)
         {
             using (var loc = doc.LockDocument())
             using (Transaction tr = doc.TransactionManager.StartTransaction())
             {
                 var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
-                CheckAndCreateLayer(doc.Database, tr, layerName);
+                CheckAndCreateLayer(doc.Database, tr, _settings.LayerName);
                 foreach (var pts in contours)
                 {
                     Polyline pl = new Polyline();
                     for (int i = 0; i < pts.Count; i++) pl.AddVertexAt(i, pts[i], 0, 0, 0);
-                    pl.Closed = true; pl.Layer = layerName;
+                    pl.Closed = true; pl.Layer = _settings.LayerName;
                     btr.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true);
                 }
                 tr.Commit();
             }
         }
 
-        private void CheckAndCreateLayer(Database db, Transaction tr, string layerName)
+        private void DrawInCadSimple(Document doc, List<List<AcadPoint2d>> contours, string layer)
+        {
+            using (var loc = doc.LockDocument())
+            using (Transaction tr = doc.TransactionManager.StartTransaction())
+            {
+                var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
+                CheckAndCreateLayer(doc.Database, tr, layer);
+                foreach (var pts in contours)
+                {
+                    Polyline pl = new Polyline();
+                    for (int i = 0; i < pts.Count; i++) pl.AddVertexAt(i, pts[i], 0, 0, 0);
+                    pl.Closed = true; pl.Layer = layer;
+                    btr.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true);
+                }
+                tr.Commit();
+            }
+        }
+
+        private Extents3d GetSelectionExtents(SelectionSet ss)
+        {
+            Extents3d ext = new Extents3d();
+            using (Transaction tr = Application.DocumentManager.MdiActiveDocument.TransactionManager.StartTransaction())
+            {
+                foreach (SelectedObject so in ss)
+                {
+                    Entity ent = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Entity;
+                    if (ent != null) try { ext.AddExtents(ent.GeometricExtents); } catch { }
+                }
+            }
+            return ext;
+        }
+
+        private void CheckAndCreateLayer(Database db, Transaction tr, string layer)
         {
             LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
-            if (!lt.Has(layerName))
+            if (!lt.Has(layer))
             {
                 lt.UpgradeOpen();
-                LayerTableRecord ltr = new LayerTableRecord { Name = layerName };
-                ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(ColorMethod.ByAci, 2);
+                LayerTableRecord ltr = new LayerTableRecord { Name = layer };
+                ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2);
                 lt.Add(ltr); tr.AddNewlyCreatedDBObject(ltr, true);
             }
+        }
+
+        private Bitmap RasterizeSelection(Document doc, SelectionSet ss, Extents3d ext, double scale)
+        {
+            int bw = (int)((ext.MaxPoint.X - ext.MinPoint.X) * scale) + 100;
+            int bh = (int)((ext.MaxPoint.Y - ext.MinPoint.Y) * scale) + 100;
+            Bitmap bmp = new Bitmap(bw, bh);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(System.Drawing.Color.Black); g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (Transaction tr = doc.TransactionManager.StartTransaction())
+                using (System.Drawing.Pen p = new System.Drawing.Pen(System.Drawing.Color.White, 3.0f))
+                {
+                    foreach (SelectedObject so in ss)
+                    {
+                        Curve c = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
+                        if (c == null) continue;
+                        int segs = 200; double step = (c.EndParam - c.StartParam) / segs;
+                        List<PointF> pts = new List<PointF>();
+                        for (int i = 0; i <= segs; i++)
+                        {
+                            AcadPoint3d pt = c.GetPointAtParameter(c.StartParam + step * i);
+                            pts.Add(new PointF((float)((pt.X - ext.MinPoint.X) * scale) + 50f, (float)((ext.MaxPoint.Y - pt.Y) * scale) + 50f));
+                        }
+                        if (pts.Count > 1) g.DrawLines(p, pts.ToArray());
+                    }
+                }
+            }
+            return bmp;
+        }
+
+        private bool IsMemorySafe(double w, double h, double s, Editor ed)
+        {
+            if (((w * s) > 12000) || ((h * s) > 12000)) { ed.WriteMessage("\n[错误] 精度过高，超出限制。"); return false; }
+            return true;
         }
 
         private void CleanMemory() { GC.Collect(); GC.WaitForPendingFinalizers(); }
