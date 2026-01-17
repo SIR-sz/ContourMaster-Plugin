@@ -19,6 +19,7 @@ namespace Plugin_ContourMaster.Services
 
         public ContourEngine(ContourSettings settings) => _settings = settings;
 
+        // 修改自
         public void ProcessContour()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
@@ -31,56 +32,82 @@ namespace Plugin_ContourMaster.Services
                 PromptSelectionResult psr = ed.GetSelection(pso);
                 if (psr.Status != PromptStatus.OK) return;
 
+                // 增加范围有效性检查
                 Extents3d totalExt = new Extents3d();
+                bool hasValidExtents = false;
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
                 {
                     foreach (SelectedObject so in psr.Value)
                     {
                         Entity ent = (Entity)tr.GetObject(so.ObjectId, OpenMode.ForRead);
-                        try { totalExt.AddExtents(ent.GeometricExtents); } catch { }
+                        try
+                        {
+                            totalExt.AddExtents(ent.GeometricExtents);
+                            hasValidExtents = true;
+                        }
+                        catch { }
                     }
                     tr.Commit();
                 }
 
-                // 1. 采用高分辨率 1 像素采样绘制
+                if (!hasValidExtents)
+                {
+                    ed.WriteMessage("\n[错误] 选中的物体没有有效的几何范围。");
+                    return;
+                }
+
+                int gapRadius = 1; // 提前声明变量作用域
+
+                // 1. 采用高分辨率采样
                 using (Bitmap bmp = RasterizeSelection(doc, psr.Value, totalExt, out double scale))
                 {
                     if (bmp == null) return;
 
-                    // 计算膨胀/腐蚀半径（像素单位）
-                    int gapRadius = (int)(_settings.SimplifyTolerance * scale);
+                    // 计算像素单位的补缝半径
+                    gapRadius = (int)(_settings.SimplifyTolerance * scale);
                     if (gapRadius < 1) gapRadius = 1;
 
-                    // 2. 核心：膨胀补缺 -> 识别孔洞 -> 腐蚀还原位置
+                    // 2. 核心：识别区域
                     bool[,] holeMap = IdentifyEnclosedHolesWithMorphology(bmp, gapRadius);
 
                     // 3. 追踪轮廓
                     List<List<PointF>> contours = FindContours(holeMap);
 
-                    // 4. 还原绘制到 CAD
+                    // 4. 还原绘制到 CAD (内部包含 eInvalidInput 防护)
                     DrawInCad(doc, contours, totalExt, scale);
                 }
 
-                ed.WriteMessage("\n[像素轮廓专家] 处理完成：轮廓已精准贴合生成。");
+                ed.WriteMessage($"\n[ContourMaster] 处理完成。补缝像素半径: {gapRadius}");
             }
-            catch (Exception ex) { ed.WriteMessage($"\n[算法异常] {ex.Message}"); }
+            catch (System.Exception ex) { ed.WriteMessage($"\n[算法异常] {ex.Message}"); }
         }
 
         private Bitmap RasterizeSelection(Document doc, SelectionSet ss, Extents3d ext, out double scale)
         {
-            int targetSize = 3000; // 提高分辨率以确保精度
+            int targetSize = 3000;
             double worldW = ext.MaxPoint.X - ext.MinPoint.X;
             double worldH = ext.MaxPoint.Y - ext.MinPoint.Y;
-            scale = targetSize / Math.Max(worldW, worldH);
+
+            double maxDim = Math.Max(worldW, worldH);
+            if (maxDim < 1e-6) // 防止极小图形导致 scale 为无穷大
+            {
+                scale = 1.0;
+                return null;
+            }
+
+            scale = targetSize / maxDim;
 
             int bmpW = (int)(worldW * scale) + 100;
             int bmpH = (int)(worldH * scale) + 100;
+
+            // 防止创建过大的位图导致内存溢出
+            if (bmpW > 10000 || bmpH > 10000) { bmpW = 10000; bmpH = 10000; }
 
             Bitmap bmp = new Bitmap(bmpW, bmpH);
             using (Graphics g = Graphics.FromImage(bmp))
             {
                 g.Clear(System.Drawing.Color.Black);
-                g.SmoothingMode = SmoothingMode.None; // 1像素采样不使用抗锯齿
+                g.SmoothingMode = SmoothingMode.None;
 
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
                 {
@@ -93,10 +120,13 @@ namespace Plugin_ContourMaster.Services
 
                             int segments = 150;
                             PointF[] pts = new PointF[segments + 1];
-                            double step = (curve.EndParam - curve.StartParam) / segments;
+                            double curveStart = curve.StartParam;
+                            double curveEnd = curve.EndParam;
+                            double step = (curveEnd - curveStart) / segments;
+
                             for (int i = 0; i <= segments; i++)
                             {
-                                Point3d p = curve.GetPointAtParameter(curve.StartParam + step * i);
+                                Point3d p = curve.GetPointAtParameter(curveStart + step * i);
                                 pts[i] = new PointF((float)((p.X - ext.MinPoint.X) * scale) + 50, (float)((ext.MaxPoint.Y - p.Y) * scale) + 50);
                             }
                             g.DrawLines(thinPen, pts);
@@ -108,46 +138,71 @@ namespace Plugin_ContourMaster.Services
             return bmp;
         }
 
+        // 优化 中的形态学逻辑
         private bool[,] IdentifyEnclosedHolesWithMorphology(Bitmap bmp, int radius)
         {
             int w = bmp.Width, h = bmp.Height;
-            bool[,] isLine = new bool[w, h];
 
-            BitmapData data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            byte[] pixels = new byte[data.Stride * h];
-            Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
-            bmp.UnlockBits(data);
-            for (int y = 0; y < h; y++)
-                for (int x = 0; x < w; x++)
-                    isLine[x, y] = pixels[y * data.Stride + x * 4 + 2] > 128;
+            // 提取像素线图
+            bool[,] isLine = ExtractLineMap(bmp);
 
             // 1. 膨胀：封死缺口
             bool[,] dilated = Dilate(isLine, radius);
 
-            // 2. 种子填充识别内部孔洞
+            // 2. 种子填充识别外部区域
+            bool[,] isOutside = FloodFillOutside(dilated);
+
+            // 3. 提取内部孔洞区域（非外部且非线段）
+            bool[,] holeMap = new bool[w, h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    holeMap[x, y] = !dilated[x, y] && !isOutside[x, y];
+
+            // 4. 腐蚀还原位置
+            return ErodeHole(holeMap, radius);
+        }
+        // 补全：提取像素位图到布尔数组
+        private bool[,] ExtractLineMap(Bitmap bmp)
+        {
+            int w = bmp.Width, h = bmp.Height;
+            bool[,] isLine = new bool[w, h];
+            BitmapData data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            byte[] pixels = new byte[data.Stride * h];
+            Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+            bmp.UnlockBits(data);
+
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    // 使用设置中的阈值识别线条
+                    isLine[x, y] = pixels[y * data.Stride + x * 4 + 2] > _settings.Threshold;
+                }
+            }
+            return isLine;
+        }
+
+        // 补全：泛洪算法识别外部空间
+        private bool[,] FloodFillOutside(bool[,] map)
+        {
+            int w = map.GetLength(0), h = map.GetLength(1);
             bool[,] isOutside = new bool[w, h];
             Queue<System.Drawing.Point> q = new Queue<System.Drawing.Point>();
+
+            // 从图像四周边界注入种子
             for (int x = 0; x < w; x++) { q.Enqueue(new System.Drawing.Point(x, 0)); q.Enqueue(new System.Drawing.Point(x, h - 1)); }
             for (int y = 0; y < h; y++) { q.Enqueue(new System.Drawing.Point(0, y)); q.Enqueue(new System.Drawing.Point(w - 1, y)); }
 
             while (q.Count > 0)
             {
                 var p = q.Dequeue();
-                if (p.X < 0 || p.X >= w || p.Y < 0 || p.Y >= h || isOutside[p.X, p.Y] || dilated[p.X, p.Y]) continue;
+                if (p.X < 0 || p.X >= w || p.Y < 0 || p.Y >= h || isOutside[p.X, p.Y] || map[p.X, p.Y]) continue;
                 isOutside[p.X, p.Y] = true;
                 q.Enqueue(new System.Drawing.Point(p.X + 1, p.Y)); q.Enqueue(new System.Drawing.Point(p.X - 1, p.Y));
                 q.Enqueue(new System.Drawing.Point(p.X, p.Y + 1)); q.Enqueue(new System.Drawing.Point(p.X, p.Y - 1));
             }
-
-            bool[,] holeMap = new bool[w, h];
-            for (int y = 0; y < h; y++)
-                for (int x = 0; x < w; x++)
-                    holeMap[x, y] = !dilated[x, y] && !isOutside[x, y];
-
-            // 3. 腐蚀：将孔洞外扩，消除内缩，撞回 1 像素原始位置
-            return ErodeHole(holeMap, radius);
+            return isOutside;
         }
-
         private bool[,] Dilate(bool[,] source, int r)
         {
             int w = source.GetLength(0), h = source.GetLength(1);
@@ -250,27 +305,50 @@ namespace Plugin_ContourMaster.Services
                 Database db = doc.Database;
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
 
-                string layerName = "LK_XS";
+                // 使用设置中的图层名
+                string layerName = _settings.LayerName ?? "像素轮廓结果";
                 LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+
                 if (!lt.Has(layerName))
                 {
                     lt.UpgradeOpen();
                     LayerTableRecord ltr = new LayerTableRecord { Name = layerName };
-                    ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2);
-                    lt.Add(ltr); tr.AddNewlyCreatedDBObject(ltr, true);
+
+                    // 修复 CS0104：显式指定使用 AutoCAD 的 Color 类
+                    ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, 2); // 黄色
+
+                    lt.Add(ltr);
+                    tr.AddNewlyCreatedDBObject(ltr, true);
                 }
 
                 foreach (var pts in contours)
                 {
+                    if (pts.Count < 2) continue;
+
                     Polyline pl = new Polyline();
+                    int validVertexCount = 0;
+
                     for (int i = 0; i < pts.Count; i++)
                     {
                         double wx = (pts[i].X - 50) / scale + ext.MinPoint.X;
                         double wy = ext.MaxPoint.Y - (pts[i].Y - 50) / scale;
-                        pl.AddVertexAt(i, new Point2d(wx, wy), 0, 0, 0);
+
+                        // 检查数值有效性，防止 eInvalidInput
+                        if (!double.IsNaN(wx) && !double.IsInfinity(wx) && !double.IsNaN(wy) && !double.IsInfinity(wy))
+                        {
+                            pl.AddVertexAt(validVertexCount, new Point2d(wx, wy), 0, 0, 0);
+                            validVertexCount++;
+                        }
                     }
-                    pl.Closed = true; pl.Layer = layerName; pl.ColorIndex = 256;
-                    btr.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true);
+
+                    if (validVertexCount > 1)
+                    {
+                        pl.Closed = true;
+                        pl.Layer = layerName;
+                        pl.ColorIndex = 256; // 使用随层颜色 (ByLayer)
+                        btr.AppendEntity(pl);
+                        tr.AddNewlyCreatedDBObject(pl, true);
+                    }
                 }
                 tr.Commit();
             }

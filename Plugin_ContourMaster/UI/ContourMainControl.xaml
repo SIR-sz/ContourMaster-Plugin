@@ -8,25 +8,16 @@
             <StackPanel>
                 <TextBlock Text="像素区域提取 (已优化纠偏)" FontSize="16" FontWeight="Bold" Margin="0,0,0,15"/>
 
-                <TextBlock Text="{Binding SimplifyTolerance, StringFormat='自动补缝距离: {0:F2} CAD单位'}" FontWeight="SemiBold"/>
-                <Slider Minimum="0.1" Maximum="10.0" Value="{Binding SimplifyTolerance}" TickFrequency="0.1" IsSnapToTickEnabled="True" Margin="0,5,0,15"/>
+                <TextBlock Text="{Binding SimplifyTolerance, StringFormat='补缝距离 (CAD单位): {0:F2}'}" FontWeight="SemiBold"/>
+                <Slider Minimum="0.01" Maximum="5.0" Value="{Binding SimplifyTolerance}" TickFrequency="0.05" IsSnapToTickEnabled="True" Margin="0,5,0,15"/>
 
-                <TextBlock Text="采样精度: (建议保持默认)" Foreground="#666" FontSize="11"/>
-                <Slider Minimum="1000" Maximum="5000" Value="3000" IsEnabled="False" Margin="0,5,0,15"/>
+                <TextBlock Text="{Binding SmoothLevel, StringFormat='边界平滑等级: {0}'}" FontWeight="SemiBold"/>
+                <Slider Minimum="0" Maximum="10" Value="{Binding SmoothLevel}" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,5,0,15"/>
 
                 <TextBlock Text="生成图层:" FontWeight="SemiBold"/>
                 <TextBox Text="{Binding LayerName}" Height="25" VerticalContentAlignment="Center" Margin="0,5,0,20"/>
 
-                <Button Content="开始提取轮廓" Height="45" Background="#007ACC" Foreground="White" FontWeight="Bold" Click="BtnExecute_Click">
-                    <Button.Resources>
-                        <Style TargetType="Border">
-                            <Setter Property="CornerRadius" Value="3"/>
-                        </Style>
-                    </Button.Resources>
-                </Button>
-
-                <TextBlock Text="* 提示：如果缺口无法闭合，请增大'补缝距离'。&#x0a;* 当前版本已解决交叉线识别与内移问题。" 
-                           FontSize="10" Foreground="#888" Margin="0,15,0,0" LineHeight="15"/>
+                <Button Content="开始提取轮廓" Height="45" Background="#007ACC" Foreground="White" FontWeight="Bold" Click="BtnExecute_Click"/>
             </StackPanel>
         </Grid>
     </ScrollViewer>
