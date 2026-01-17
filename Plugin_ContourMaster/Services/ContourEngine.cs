@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Reflection;
 using System.Runtime.InteropServices;
 // 定义别名以解决冲突
 using AcadPoint2d = Autodesk.AutoCAD.Geometry.Point2d;
@@ -19,6 +20,7 @@ using CvPoint = OpenCvSharp.Point;
 
 namespace Plugin_ContourMaster.Services
 {
+
     public class ContourEngine
     {
         private readonly ContourSettings _settings;
