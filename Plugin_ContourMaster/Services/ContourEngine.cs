@@ -24,6 +24,8 @@ using Tesseract;
 using AcadPoint2d = Autodesk.AutoCAD.Geometry.Point2d;
 using AcadPoint3d = Autodesk.AutoCAD.Geometry.Point3d;
 using CvPoint = OpenCvSharp.Point;
+// 明确指定使用 System.Drawing 的 ImageFormat
+using DrawingImageFormat = System.Drawing.Imaging.ImageFormat;
 
 namespace Plugin_ContourMaster.Services
 {
@@ -69,7 +71,7 @@ namespace Plugin_ContourMaster.Services
         #endregion
 
         #region 2. 图像参照原位识别逻辑
-        public void ProcessReferencedImage()
+        public async Task ProcessReferencedImage()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
@@ -86,12 +88,15 @@ namespace Plugin_ContourMaster.Services
                     RasterImage img = tr.GetObject(per.ObjectId, OpenMode.ForRead) as RasterImage;
                     if (img == null) return;
                     RasterImageDef imgDef = tr.GetObject(img.ImageDefId, OpenMode.ForRead) as RasterImageDef;
-                    if (!File.Exists(imgDef.ActiveFileName)) throw new Exception("找不到图像源文件。");
 
+                    // 必须在 using 块内 await，保证 OCR 完成前 bmp 不被销毁
                     using (Bitmap bmp = new Bitmap(imgDef.ActiveFileName))
                     {
                         Matrix3d pixelToWorld = GetEntityTransform(img, bmp.Width, bmp.Height);
-                        if (_settings.IsOcrMode) ProcessImageOcr(bmp, pixelToWorld);
+                        if (_settings.IsOcrMode)
+                        {
+                            await ProcessImageOcr(bmp, pixelToWorld); // 关键：增加 await
+                        }
                         else
                         {
                             List<List<AcadPoint2d>> contours = ExtractContoursReferenced(bmp, pixelToWorld);
@@ -107,7 +112,7 @@ namespace Plugin_ContourMaster.Services
         #endregion
 
         #region 3. OCR 识别核心逻辑
-        private async void ProcessImageOcr(Bitmap bmp, Matrix3d transform)
+        private async Task ProcessImageOcr(Bitmap bmp, Matrix3d transform)
         {
             if (_settings.SelectedOcrEngine == OcrEngineType.Baidu)
                 await ProcessBaiduOcr(bmp, transform);
@@ -117,70 +122,116 @@ namespace Plugin_ContourMaster.Services
 
         private async Task ProcessBaiduOcr(Bitmap bmp, Matrix3d transform)
         {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
             try
             {
+                ed.WriteMessage("\n[调试] 开始百度 OCR 流程...");
+
                 string token = await GetBaiduAccessToken(_settings.BaiduApiKey, _settings.BaiduSecretKey);
-                if (string.IsNullOrEmpty(token)) throw new Exception("Token 获取失败，请检查 API Key。");
+                if (string.IsNullOrEmpty(token)) throw new Exception("Token 获取失败。");
+
+                // 1. 计算缩放比例
+                Bitmap processedBmp = bmp;
+                double scaleRatio = 1.0; // 还原比例：原图 / 缩放图
+                int maxSide = Math.Max(bmp.Width, bmp.Height);
+
+                if (maxSide > 4000)
+                {
+                    scaleRatio = (double)maxSide / 4000.0; // 记录缩放倍数
+                    int newW = (int)(bmp.Width / scaleRatio);
+                    int newH = (int)(bmp.Height / scaleRatio);
+                    processedBmp = new Bitmap(bmp, new System.Drawing.Size(newW, newH));
+                    ed.WriteMessage($"\n[调试] 缩放比例: {scaleRatio:F2}, 识别尺寸: {newW}x{newH}");
+                }
 
                 string base64Image;
                 using (MemoryStream ms = new MemoryStream())
                 {
-                    // 使用 80% 质量压缩，防止 Base64 字符串由于像素过高超过百度 4MB 的限制
-                    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    var jpgEncoder = GetEncoder(System.Drawing.Imaging.ImageFormat.Jpeg);
+                    var encoderParams = new EncoderParameters(1);
+                    encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 80L);
+                    processedBmp.Save(ms, jpgEncoder, encoderParams);
                     base64Image = Convert.ToBase64String(ms.ToArray());
                 }
 
-                // ✨ 核心修正：手动构建并 UrlEncode image 参数，解决“参数无效”
-                string requestBody = "image=" + WebUtility.UrlEncode(base64Image);
-                var content = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
+                string postBody = "image=" + System.Net.WebUtility.UrlEncode(base64Image) + "&probability=true";
+                var content = new StringContent(postBody, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
 
-                // 高精度含位置版接口
                 var response = await _httpClient.PostAsync($"https://aip.baidubce.com/rest/2.0/ocr/v1/accurate?access_token={token}", content);
                 string json = await response.Content.ReadAsStringAsync();
 
-                var serializer = new JavaScriptSerializer();
+                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var result = serializer.Deserialize<Dictionary<string, object>>(json);
 
                 if (result.ContainsKey("error_code"))
                     throw new Exception($"{result["error_msg"]} (代码:{result["error_code"]})");
 
-                if (result.ContainsKey("words_result"))
+                if (result.ContainsKey("words_result") && result["words_result"] is System.Collections.IEnumerable wordsList)
                 {
                     using (var loc = doc.LockDocument())
                     using (Transaction tr = doc.TransactionManager.StartTransaction())
                     {
                         var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
                         CheckAndCreateLayer(doc.Database, tr, "OCR_识别文字");
+
+                        // 矩阵本身的单位比例
                         double matrixScale = new Vector3d(transform[0, 0], transform[1, 0], transform[2, 0]).Length;
 
-                        foreach (Dictionary<string, object> item in (Array)result["words_result"])
+                        foreach (object itemObj in wordsList)
                         {
+                            var item = itemObj as Dictionary<string, object>;
+                            if (item == null) continue;
+
                             string text = item["words"].ToString();
                             var locData = (Dictionary<string, object>)item["location"];
 
-                            AcadPoint3d worldLoc = new AcadPoint3d(Convert.ToDouble(locData["left"]),
-                                                                  bmp.Height - Convert.ToDouble(locData["top"]), 0).TransformBy(transform);
+                            // 2. ✨ 核心修正：将 OCR 返回的坐标还原到原图尺寸
+                            double rawLeft = Convert.ToDouble(locData["left"]) * scaleRatio;
+                            double rawTop = Convert.ToDouble(locData["top"]) * scaleRatio;
+                            double rawWidth = Convert.ToDouble(locData["width"]) * scaleRatio;
+                            double rawHeight = Convert.ToDouble(locData["height"]) * scaleRatio;
+
+                            // 3. 计算 CAD 世界坐标 (使用原图高度 bmp.Height 进行 Y 翻转)
+                            AcadPoint3d worldLoc = new AcadPoint3d(rawLeft, bmp.Height - rawTop, 0).TransformBy(transform);
 
                             using (MText mText = new MText())
                             {
                                 mText.Contents = text;
                                 mText.Location = worldLoc;
-                                mText.TextHeight = SnapToStandardHeight(Convert.ToDouble(locData["height"]) * matrixScale);
-                                mText.Width = Convert.ToDouble(locData["width"]) * matrixScale;
+                                // 字高和宽度也需要乘回 scaleRatio 才能匹配原始比例
+                                mText.TextHeight = SnapToStandardHeight(rawHeight * matrixScale);
+                                mText.Width = rawWidth * matrixScale;
+
                                 mText.Layer = "OCR_识别文字";
-                                mText.Attachment = AttachmentPoint.TopLeft;
+                                mText.Attachment = AttachmentPoint.TopLeft; // 对应识别结果的左上角
+
                                 btr.AppendEntity(mText);
                                 tr.AddNewlyCreatedDBObject(mText, true);
                             }
                         }
                         tr.Commit();
+                        ed.WriteMessage("\n[Baidu OCR] 坐标修正识别完成。");
                     }
-                    ed.WriteMessage("\n[Baidu OCR] 识别并原位生成完成。");
                 }
+
+                if (processedBmp != bmp) processedBmp.Dispose();
             }
-            catch (Exception ex) { ed.WriteMessage($"\n[百度OCR错误] {ex.Message}"); }
+            catch (Exception ex)
+            {
+                ed.WriteMessage($"\n[百度OCR错误] {ex.Message}");
+            }
+        }
+
+        // 辅助方法：获取图像编码器
+        private ImageCodecInfo GetEncoder(DrawingImageFormat format) // 使用别名
+        {
+            ImageCodecInfo[] codecs = ImageCodecInfo.GetImageDecoders();
+            foreach (ImageCodecInfo codec in codecs)
+            {
+                if (codec.FormatID == format.Guid) return codec;
+            }
+            return null;
         }
 
         private void ProcessTesseractOcr(Bitmap bmp, Matrix3d transform)

@@ -1,4 +1,6 @@
-﻿using System.ComponentModel;
+﻿using Microsoft.Win32; // 必须引用此命名空间以读写注册表
+using System;
+using System.ComponentModel;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -14,6 +16,9 @@ namespace Plugin_ContourMaster.Models
     [Obfuscation(Feature = "renaming", Exclude = true)]
     public class ContourSettings : INotifyPropertyChanged
     {
+        // 注册表存储路径
+        private const string RegPath = @"Software\Plugin_ContourMaster\Settings";
+
         private double _threshold = 128.0;
         private double _simplifyTolerance = 0.5;
         private int _smoothLevel = 2;
@@ -21,10 +26,39 @@ namespace Plugin_ContourMaster.Models
         private int _precisionLevel = 5;
         private bool _isOcrMode = false;
 
-        // ✨ 新增：百度 OCR 相关字段
         private OcrEngineType _selectedOcrEngine = OcrEngineType.Tesseract;
         private string _baiduApiKey = "";
         private string _baiduSecretKey = "";
+
+        public ContourSettings()
+        {
+            // 初始化时自动加载已保存的配置
+            LoadFromRegistry();
+        }
+
+        #region 自动记忆属性
+        public string BaiduApiKey
+        {
+            get => _baiduApiKey;
+            set
+            {
+                _baiduApiKey = value;
+                OnPropertyChanged();
+                SaveToRegistry("BaiduApiKey", value); // 变更即保存到注册表
+            }
+        }
+
+        public string BaiduSecretKey
+        {
+            get => _baiduSecretKey;
+            set
+            {
+                _baiduSecretKey = value;
+                OnPropertyChanged();
+                SaveToRegistry("BaiduSecretKey", value); // 变更即保存到注册表
+            }
+        }
+        #endregion
 
         public bool IsOcrMode
         {
@@ -32,25 +66,10 @@ namespace Plugin_ContourMaster.Models
             set { _isOcrMode = value; OnPropertyChanged(); }
         }
 
-        // ✨ 新增：OCR 引擎选择属性
         public OcrEngineType SelectedOcrEngine
         {
             get => _selectedOcrEngine;
             set { _selectedOcrEngine = value; OnPropertyChanged(); }
-        }
-
-        // ✨ 新增：百度 API Key
-        public string BaiduApiKey
-        {
-            get => _baiduApiKey;
-            set { _baiduApiKey = value; OnPropertyChanged(); }
-        }
-
-        // ✨ 新增：百度 Secret Key
-        public string BaiduSecretKey
-        {
-            get => _baiduSecretKey;
-            set { _baiduSecretKey = value; OnPropertyChanged(); }
         }
 
         public double Threshold
@@ -82,6 +101,39 @@ namespace Plugin_ContourMaster.Models
             get => _precisionLevel;
             set { _precisionLevel = value; OnPropertyChanged(); }
         }
+
+        #region 注册表持久化逻辑
+        private void LoadFromRegistry()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegPath))
+                {
+                    if (key != null)
+                    {
+                        _baiduApiKey = key.GetValue("BaiduApiKey", "").ToString();
+                        _baiduSecretKey = key.GetValue("BaiduSecretKey", "").ToString();
+                    }
+                }
+            }
+            catch { /* 忽略读取异常 */ }
+        }
+
+        private void SaveToRegistry(string name, string value)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RegPath))
+                {
+                    if (key != null)
+                    {
+                        key.SetValue(name, value ?? "");
+                    }
+                }
+            }
+            catch { /* 忽略写入异常 */ }
+        }
+        #endregion
 
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string name = null)

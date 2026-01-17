@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
-             xmlns:local="clr-namespace:Plugin_ContourMaster.UI"
+            xmlns:local="clr-namespace:Plugin_ContourMaster.UI"
              xmlns:models="clr-namespace:Plugin_ContourMaster.Models"
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
              mc:Ignorable="d" 
@@ -13,6 +13,8 @@
     <UserControl.Resources>
         <local:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
+        <local:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
 
         <ObjectDataProvider x:Key="OcrEngineEnumValues" MethodName="GetValues" ObjectType="{x:Type sys:Enum}">
             <ObjectDataProvider.MethodParameters>
@@ -120,10 +122,24 @@
                                         </Style.Triggers>
                                     </Style>
                                 </StackPanel.Style>
+
+                                <CheckBox x:Name="ChkShowKeys" Content="显示明文 Key" FontSize="10" Margin="0,0,0,8" Foreground="#666666"/>
+
                                 <TextBlock Text="Baidu API Key" FontSize="10" Foreground="#666666"/>
-                                <TextBox Text="{Binding BaiduApiKey}" Margin="0,2,0,8"/>
+                                <Grid Margin="0,2,0,8">
+                                    <TextBox Text="{Binding BaiduApiKey, UpdateSourceTrigger=PropertyChanged}" 
+                                             Visibility="{Binding IsChecked, ElementName=ChkShowKeys, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                    <PasswordBox x:Name="PwdApiKey" PasswordChar="*" PasswordChanged="PwdApiKey_PasswordChanged"
+                                                 Visibility="{Binding IsChecked, ElementName=ChkShowKeys, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
+                                </Grid>
+
                                 <TextBlock Text="Baidu Secret Key" FontSize="10" Foreground="#666666"/>
-                                <TextBox Text="{Binding BaiduSecretKey}" Margin="0,2"/>
+                                <Grid Margin="0,2,0,0">
+                                    <TextBox Text="{Binding BaiduSecretKey, UpdateSourceTrigger=PropertyChanged}" 
+                                             Visibility="{Binding IsChecked, ElementName=ChkShowKeys, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                    <PasswordBox x:Name="PwdSecretKey" PasswordChar="*" PasswordChanged="PwdSecretKey_PasswordChanged"
+                                                 Visibility="{Binding IsChecked, ElementName=ChkShowKeys, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
+                                </Grid>
                             </StackPanel>
                         </StackPanel>
                     </StackPanel>
