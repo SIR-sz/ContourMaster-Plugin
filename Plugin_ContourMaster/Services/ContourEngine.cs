@@ -355,19 +355,44 @@ namespace Plugin_ContourMaster.Services
                 {
                     Cv2.Threshold(gray, binary, _settings.Threshold, 255, ThresholdTypes.Binary);
                     if (!onlyHoles && Cv2.CountNonZero(binary) > (binary.Rows * binary.Cols / 2)) Cv2.BitwiseNot(binary, binary);
+
+                    // 补缝/闭运算逻辑
                     int kSize = (int)Math.Max(3, Math.Min(101, _settings.SimplifyTolerance * scale));
                     if (kSize % 2 == 0) kSize++;
                     using (Mat k = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(kSize, kSize)))
                         Cv2.MorphologyEx(binary, binary, MorphTypes.Close, k);
+
                     CvPoint[][] c; HierarchyIndex[] h;
-                    Cv2.FindContours(binary, out c, out h, RetrievalModes.List, ContourApproximationModes.ApproxNone);
+                    // 使用 CComp 模式以正确识别嵌套的闭合区域
+                    Cv2.FindContours(binary, out c, out h, RetrievalModes.CComp, ContourApproximationModes.ApproxSimple);
+
                     if (c == null) return results;
-                    foreach (var pts in c)
+
+                    for (int i = 0; i < c.Length; i++)
                     {
-                        if (onlyHoles && h[0].Parent == -1) continue;
-                        if (pts.Length < 4) continue;
+                        if (onlyHoles && h[i].Parent == -1) continue;
+
+                        CvPoint[] currentContour = c[i];
+
+                        // ✨ 优化平滑逻辑：使用固定的像素偏差值，防止“切角”过大
+                        if (_settings.SmoothLevel > 0)
+                        {
+                            // 将平滑等级 (0-10) 映射为 (0-2.5) 像素的可允许偏差
+                            // 这样即便设为最大，点位偏离也不会超过 2.5 个像素，保证了重合度
+                            double epsilon = _settings.SmoothLevel * 0.25;
+                            currentContour = Cv2.ApproxPolyDP(currentContour, epsilon, true);
+                        }
+
+                        if (currentContour.Length < 3) continue;
+
                         List<AcadPoint2d> path = new List<AcadPoint2d>();
-                        foreach (var p in pts) path.Add(new AcadPoint2d(p.X / scale + ext.MinPoint.X, ext.MaxPoint.Y - p.Y / scale));
+                        foreach (var p in currentContour)
+                        {
+                            // 补偿 RasterizeSelection 中的 50 像素偏移
+                            double worldX = (p.X - 50.0) / scale + ext.MinPoint.X;
+                            double worldY = ext.MaxPoint.Y - (p.Y - 50.0) / scale;
+                            path.Add(new AcadPoint2d(worldX, worldY));
+                        }
                         results.Add(path);
                     }
                 }
@@ -478,21 +503,32 @@ namespace Plugin_ContourMaster.Services
             Bitmap bmp = new Bitmap(bw, bh);
             using (Graphics g = Graphics.FromImage(bmp))
             {
-                g.Clear(System.Drawing.Color.Black); g.SmoothingMode = SmoothingMode.AntiAlias;
+                // ✨ 修改 1：关闭抗锯齿。抗锯齿产生的灰色边缘会导致识别出的轮廓“缩水”或“胀大”
+                g.SmoothingMode = SmoothingMode.None;
+                g.Clear(System.Drawing.Color.Black);
+
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
-                using (System.Drawing.Pen p = new System.Drawing.Pen(System.Drawing.Color.White, 3.0f))
+                // ✨ 修改 2：将画笔宽度从 3.0 减小为 1.0 或 1.5
+                // 识别“洞”时，轮廓会偏向画笔的内侧。画笔越细，生成的轮廓越接近原始矢量中心线。
+                using (System.Drawing.Pen p = new System.Drawing.Pen(System.Drawing.Color.White, 1.0f))
+                {
                     foreach (SelectedObject so in ss)
                     {
                         Curve c = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
                         if (c == null) continue;
                         List<PointF> pts = new List<PointF>();
-                        for (int i = 0; i <= 200; i++)
+                        // 增加采样点密度，确保曲线平滑
+                        double start = c.StartParam;
+                        double end = c.EndParam;
+                        int steps = 300;
+                        for (int i = 0; i <= steps; i++)
                         {
-                            AcadPoint3d pt = c.GetPointAtParameter(c.StartParam + (c.EndParam - c.StartParam) * i / 200);
+                            AcadPoint3d pt = c.GetPointAtParameter(start + (end - start) * i / steps);
                             pts.Add(new PointF((float)((pt.X - ext.MinPoint.X) * scale) + 50f, (float)((ext.MaxPoint.Y - pt.Y) * scale) + 50f));
                         }
                         if (pts.Count > 1) g.DrawLines(p, pts.ToArray());
                     }
+                }
             }
             return bmp;
         }

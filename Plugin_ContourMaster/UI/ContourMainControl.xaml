@@ -3,17 +3,16 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
-            xmlns:local="clr-namespace:Plugin_ContourMaster.UI"
+             xmlns:local="clr-namespace:Plugin_ContourMaster.UI"
              xmlns:models="clr-namespace:Plugin_ContourMaster.Models"
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
              mc:Ignorable="d" 
-             d:DesignHeight="800" d:DesignWidth="300"
+             d:DesignHeight="850" d:DesignWidth="300"
              Background="#F0F2F5">
 
     <UserControl.Resources>
         <local:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
-
         <local:InverseBooleanToVisibilityConverter x:Key="InverseBooleanToVisibilityConverter"/>
 
         <ObjectDataProvider x:Key="OcrEngineEnumValues" MethodName="GetValues" ObjectType="{x:Type sys:Enum}">
@@ -158,7 +157,26 @@
                         </Button.Resources>
                     </Button>
 
-                    <TextBlock Text="提示：图像识别需先点击“识别图像参照”" HorizontalAlignment="Center" Margin="0,10" Foreground="#888888" FontSize="11"/>
+                    <Border Background="#EBEEF5" CornerRadius="4" Padding="10" Margin="0,15,0,5">
+                        <StackPanel>
+                            <TextBlock Text="💡 参数使用说明：" FontWeight="Bold" Foreground="#606266" Margin="0,0,0,5" FontSize="11"/>
+
+                            <TextBlock Text="• 采样精度：控制转换图片的像素分辨率。数值越高，识别细小区域能力越强。" 
+                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+
+                            <TextBlock Text="• 识别阈值：区分背景与线条。如果线条颜色较浅，请适当调低该数值。" 
+                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+
+                            <TextBlock Text="• 补缝距离：自动连接断开线。数值越大，越能填补缺口，但细节会丢失。" 
+                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+
+                            <TextBlock Text="• 平滑等级：控制顶点密度。数值越高点数越少，但重合度会略微下降。" 
+                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+
+                            <TextBlock Text="• 图像模式提示：识别前需先点击“识别图像参照”。" 
+                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
 
             </StackPanel>
