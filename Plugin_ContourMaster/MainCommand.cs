@@ -7,7 +7,10 @@ using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Forms.Integration;
+using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
+using WpfWindow = System.Windows.Window;
 
 // 标记插件入口类
 [assembly: ExtensionApplication(typeof(Plugin_ContourMaster.PluginEntry))]
@@ -67,25 +70,33 @@ namespace Plugin_ContourMaster
     /// </summary>
     public class MainCommand
     {
-        private static PaletteSet _ps = null;
+        private static WpfWindow _toolWindow = null;
 
-        /// <summary>
-        /// 显示插件面板
-        /// </summary>
         [CommandMethod("PXQLK_PANEL")]
         [CommandMethod("LK")]
         public void ShowPanel()
         {
-            if (_ps == null)
+            // 如果窗口已存在且未被销毁，则激活它
+            if (_toolWindow != null && _toolWindow.IsVisible)
             {
-                _ps = new PaletteSet("图像轮廓文字识别工具", new Guid("F3A8E9B2-C12D-4C11-8D9A-2B3C4D5E6F7A"));
-                _ps.Size = new Size(300, 600);
-
-                var control = new ContourMainControl();
-                ElementHost host = new ElementHost { Child = control, Dock = System.Windows.Forms.DockStyle.Fill };
-                _ps.Add("算法设置", host);
+                _toolWindow.Activate();
+                return;
             }
-            _ps.Visible = true;
+
+            _toolWindow = new WpfWindow
+            {
+                Title = "轮廓图像文字识别工具",
+                Content = new ContourMainControl(),
+                Width = 320,
+                Height = 750,
+                WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen,
+                Topmost = true,
+                ResizeMode = System.Windows.ResizeMode.CanMinimize,
+                ShowInTaskbar = false
+            };
+
+            // 使用 AutoCAD 方式显示非模态窗口
+            AcApp.ShowModelessWindow(_toolWindow);
         }
     }
 }

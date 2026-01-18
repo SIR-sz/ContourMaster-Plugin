@@ -1,6 +1,7 @@
 ﻿using CadAtlasManager.Core;
 using Plugin_ContourMaster.UI;
 using System;
+using System.Windows.Media;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace Plugin_ContourMaster
@@ -8,11 +9,12 @@ namespace Plugin_ContourMaster
     public class ContourMasterTool : ICadTool
     {
         private static bool _isAuthorized = false;
-        public string ToolName => "像素轮廓专家";
-        public string Description => "像素级轮廓提取工具。";
-        public string IconCode => "\uE114";
-        public string Category { get; set; } = "图形处理";
-        public System.Windows.Media.ImageSource ToolPreview { get; set; }
+        public string ToolName => "轮廓图像文字识别";// 按钮显示的名称
+        public string Description => "轮廓提取、图片转ACD、图片文字转多行文本。";
+        public string IconCode => "\uE114";// 布局图标代码
+        public string Category { get; set; } // 由主程序加载时根据目录自动分配                                         
+
+        public ImageSource ToolPreview { get; set; }  // 当目录下有同名图片时，CadAtlasManager 主程序会自动填充它。
 
         public bool VerifyHost(Guid hostGuid)
         {

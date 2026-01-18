@@ -7,6 +7,7 @@ using System.Windows.Data;
 
 namespace Plugin_ContourMaster.UI
 {
+
     // ✨ 确保是 public，否则 XAML 找不到
     public class InverseBooleanConverter : IValueConverter
     {
@@ -72,6 +73,13 @@ namespace Plugin_ContourMaster.UI
         {
             try { action.Invoke(new ContourEngine(Settings)); }
             catch (Exception ex) { MessageBox.Show($"异常: {ex.Message}"); }
+        }
+        // 在类中增加此方法
+        private void BtnAbout_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+            AboutWindow aboutWin = new AboutWindow();
+            // 设置为主窗口的子窗口，使其总是在最前
+            Autodesk.AutoCAD.ApplicationServices.Application.ShowModalWindow(aboutWin);
         }
     }
 }
