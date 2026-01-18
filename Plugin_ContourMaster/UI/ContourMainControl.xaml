@@ -54,7 +54,7 @@
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Background="#007ACC" Padding="15,12">
-            <TextBlock Text="🎯 ContourMaster 智能轮廓提取" Foreground="White" FontSize="14" FontWeight="Bold"/>
+            <TextBlock Text="🎯 智能轮廓文字提取" Foreground="White" FontSize="14" FontWeight="Bold"/>
         </Border>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">

@@ -78,7 +78,7 @@ namespace Plugin_ContourMaster
         {
             if (_ps == null)
             {
-                _ps = new PaletteSet("像素轮廓工具", new Guid("F3A8E9B2-C12D-4C11-8D9A-2B3C4D5E6F7A"));
+                _ps = new PaletteSet("图像轮廓文字识别工具", new Guid("F3A8E9B2-C12D-4C11-8D9A-2B3C4D5E6F7A"));
                 _ps.Size = new Size(300, 600);
 
                 var control = new ContourMainControl();

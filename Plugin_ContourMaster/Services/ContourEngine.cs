@@ -8,6 +8,7 @@ using OpenCvSharp.Extensions;
 using Plugin_ContourMaster.Models;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -19,6 +20,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using Tesseract;
+
 
 // ✨ 定义别名以彻底解决命名冲突
 using AcadPoint2d = Autodesk.AutoCAD.Geometry.Point2d;
@@ -41,12 +43,19 @@ namespace Plugin_ContourMaster.Services
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
+            Stopwatch sw = new Stopwatch();
+
             try
             {
-                PromptSelectionResult psr = ed.GetSelection(new PromptSelectionOptions { MessageForAdding = "\n请选择要生成轮廓的矢量元素: " });
+                PromptSelectionResult psr = ed.GetSelection(new PromptSelectionOptions { MessageForAdding = "\n请选择要生成轮廓的元素: " });
                 if (psr.Status != PromptStatus.OK) return;
 
+                sw.Start();
+                ed.WriteMessage($"\n[ContourMaster] 开始处理，已选择 {psr.Value.Count} 个元素...");
+
                 Extents3d totalExt = GetSelectionExtents(psr.Value);
+
+                // 逻辑转换
                 int targetSize = _settings.PrecisionLevel * 1000;
                 double worldW = totalExt.MaxPoint.X - totalExt.MinPoint.X;
                 double worldH = totalExt.MaxPoint.Y - totalExt.MinPoint.Y;
@@ -54,19 +63,42 @@ namespace Plugin_ContourMaster.Services
                 if (worldW <= 0 || worldH <= 0) return;
                 double scale = targetSize / Math.Max(worldW, worldH);
 
+                // 内存安全检查
                 if (!IsMemorySafe(worldW, worldH, scale, ed)) return;
 
+                ed.WriteMessage("\n[1/4] 正在将矢量元素光栅化为位图...");
                 using (Bitmap bmp = RasterizeSelection(doc, psr.Value, totalExt, scale))
                 {
                     if (bmp == null) return;
-                    List<List<AcadPoint2d>> cadContours = ExtractContoursFromBitmap(bmp, totalExt, scale, true);
-                    if (cadContours.Count == 0) { ed.WriteMessage("\n[提示] 未发现闭合区域。"); return; }
-                    DrawInCad(doc, cadContours, psr.Value, scale);
-                    ed.WriteMessage($"\n[ContourMaster] 成功识别 {cadContours.Count} 个区域。");
+                    ed.WriteMessage($"\n -> 位图创建成功: {bmp.Width}x{bmp.Height}");
+
+                    ed.WriteMessage("\n[2/4] 正在使用 OpenCV 提取图像轮廓...");
+                    List<List<AcadPoint2d>> cadContours = ExtractCadContoursWithOpenCv(bmp, totalExt, scale, ed);
+
+                    if (cadContours.Count == 0)
+                    {
+                        ed.WriteMessage("\n[未发现轮廓] 请确保选中的线能够构成闭合区域。建议调低“识别阈值”或增加“像素精度”。");
+                        return;
+                    }
+
+                    ed.WriteMessage($"\n[3/4] 提取完成，共识别到 {cadContours.Count} 个闭合区域。");
+                    ed.WriteMessage("\n[4/4] 正在生成 AutoCAD 多段线并执行几何吸附...");
+
+                    DrawInCad(doc, cadContours, psr.Value, scale, ed);
                 }
+
+                sw.Stop();
+                ed.WriteMessage($"\n[ContourMaster] 处理完毕！总耗时: {sw.ElapsedMilliseconds} ms。");
             }
-            catch (Exception ex) { ed.WriteMessage($"\n[异常] {ex.Message}"); }
-            finally { CleanMemory(); }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n[致命异常] 运算中止: {ex.Message}\n{ex.StackTrace}");
+            }
+            finally
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
         }
         #endregion
 
@@ -344,56 +376,57 @@ namespace Plugin_ContourMaster.Services
             return (raw > std[std.Length - 1] * 1.5) ? raw : closest;
         }
 
-        private List<List<AcadPoint2d>> ExtractContoursFromBitmap(Bitmap bmp, Extents3d ext, double scale, bool onlyHoles)
+        private List<List<AcadPoint2d>> ExtractCadContoursWithOpenCv(Bitmap bmp, Extents3d ext, double scale, Editor ed)
         {
             List<List<AcadPoint2d>> results = new List<List<AcadPoint2d>>();
+
             using (Mat src = bmp.ToMat())
             using (Mat gray = new Mat())
             {
                 Cv2.CvtColor(src, gray, ColorConversionCodes.BGRA2GRAY);
                 using (Mat binary = new Mat())
                 {
-                    Cv2.Threshold(gray, binary, _settings.Threshold, 255, ThresholdTypes.Binary);
-                    if (!onlyHoles && Cv2.CountNonZero(binary) > (binary.Rows * binary.Cols / 2)) Cv2.BitwiseNot(binary, binary);
+                    int thresholdValue = (int)Math.Max(10.0, Math.Min(240.0, _settings.Threshold));
+                    Cv2.Threshold(gray, binary, thresholdValue, 255, ThresholdTypes.Binary);
 
-                    // 补缝/闭运算逻辑
-                    int kSize = (int)Math.Max(3, Math.Min(101, _settings.SimplifyTolerance * scale));
+                    int kSize = (int)Math.Ceiling(_settings.SimplifyTolerance * scale * 1.2);
+                    if (kSize < 3) kSize = 3;
                     if (kSize % 2 == 0) kSize++;
-                    using (Mat k = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(kSize, kSize)))
-                        Cv2.MorphologyEx(binary, binary, MorphTypes.Close, k);
+                    kSize = Math.Min(kSize, 101);
 
-                    CvPoint[][] c; HierarchyIndex[] h;
-                    // 使用 CComp 模式以正确识别嵌套的闭合区域
-                    Cv2.FindContours(binary, out c, out h, RetrievalModes.CComp, ContourApproximationModes.ApproxSimple);
+                    ed.WriteMessage($"\n -> 图像算法参数: 阈值={thresholdValue}, 闭运算核={kSize}");
 
-                    if (c == null) return results;
-
-                    for (int i = 0; i < c.Length; i++)
+                    using (Mat kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(kSize, kSize)))
                     {
-                        if (onlyHoles && h[i].Parent == -1) continue;
+                        Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel);
+                    }
 
-                        CvPoint[] currentContour = c[i];
+                    CvPoint[][] contours;
+                    HierarchyIndex[] hierarchy;
+                    Cv2.FindContours(binary, out contours, out hierarchy, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
 
-                        // ✨ 优化平滑逻辑：使用固定的像素偏差值，防止“切角”过大
-                        if (_settings.SmoothLevel > 0)
+                    if (contours == null) return results;
+
+                    for (int i = 0; i < contours.Length; i++)
+                    {
+                        // 只处理有父级的轮廓（内孔逻辑）
+                        if (hierarchy[i].Parent == -1) continue;
+
+                        var contour = contours[i];
+                        if (contour.Length < 4) continue;
+                        if (Cv2.ContourArea(contour) < 50) continue;
+
+                        double epsilon = 1.0 + (_settings.SmoothLevel * 0.2);
+                        CvPoint[] approx = Cv2.ApproxPolyDP(contour, epsilon, true);
+
+                        List<AcadPoint2d> cadPath = new List<AcadPoint2d>();
+                        foreach (var p in approx)
                         {
-                            // 将平滑等级 (0-10) 映射为 (0-2.5) 像素的可允许偏差
-                            // 这样即便设为最大，点位偏离也不会超过 2.5 个像素，保证了重合度
-                            double epsilon = _settings.SmoothLevel * 0.25;
-                            currentContour = Cv2.ApproxPolyDP(currentContour, epsilon, true);
+                            double wx = (p.X + 0.5 - 50.0) / scale + ext.MinPoint.X;
+                            double wy = ext.MaxPoint.Y - (p.Y + 0.5 - 50.0) / scale;
+                            cadPath.Add(new AcadPoint2d(wx, wy));
                         }
-
-                        if (currentContour.Length < 3) continue;
-
-                        List<AcadPoint2d> path = new List<AcadPoint2d>();
-                        foreach (var p in currentContour)
-                        {
-                            // 补偿 RasterizeSelection 中的 50 像素偏移
-                            double worldX = (p.X - 50.0) / scale + ext.MinPoint.X;
-                            double worldY = ext.MaxPoint.Y - (p.Y - 50.0) / scale;
-                            path.Add(new AcadPoint2d(worldX, worldY));
-                        }
-                        results.Add(path);
+                        results.Add(cadPath);
                     }
                 }
             }
@@ -435,20 +468,131 @@ namespace Plugin_ContourMaster.Services
             double scX = (ext.MaxPoint.X - ext.MinPoint.X) / imgW;
             return Matrix3d.Displacement(ext.MinPoint.GetAsVector()) * Matrix3d.Scaling(scX, ext.MinPoint);
         }
-
-        private void DrawInCad(Document doc, List<List<AcadPoint2d>> contours, SelectionSet original, double scale)
+        private AcadPoint2d SnapPointToOriginalCurves(AcadPoint2d pt, SelectionSet originalSs, Transaction tr, double pixelSize)
         {
+            AcadPoint3d pt3d = new AcadPoint3d(pt.X, pt.Y, 0);
+            // 吸附阈值设定：通常取补缝距离的 1.5 倍
+            double snapThreshold = Math.Max(pixelSize * 6.0, _settings.SimplifyTolerance * 1.5);
+            double searchThreshold = snapThreshold + (pixelSize * 2.0);
+
+            List<Curve> nearbyCurves = new List<Curve>();
+            List<AcadPoint3d> criticalPoints = new List<AcadPoint3d>();
+
+            foreach (SelectedObject so in originalSs)
+            {
+                try
+                {
+                    Curve curve = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
+                    if (curve == null) continue;
+
+                    // 过滤距离太远的曲线，减少计算量
+                    Extents3d ext = curve.GeometricExtents;
+                    if (pt.X < ext.MinPoint.X - searchThreshold || pt.X > ext.MaxPoint.X + searchThreshold ||
+                        pt.Y < ext.MinPoint.Y - searchThreshold || pt.Y > ext.MaxPoint.Y + searchThreshold)
+                        continue;
+
+                    nearbyCurves.Add(curve);
+                    criticalPoints.Add(curve.StartPoint);
+                    criticalPoints.Add(curve.EndPoint);
+                }
+                catch { continue; }
+            }
+
+            AcadPoint3d bestSnapPt = pt3d;
+            double minCriticalDist = snapThreshold;
+            bool foundCritical = false;
+
+            // 1. 端点吸附优先
+            foreach (AcadPoint3d cp in criticalPoints)
+            {
+                double d = pt3d.DistanceTo(cp);
+                if (d < minCriticalDist) { minCriticalDist = d; bestSnapPt = cp; foundCritical = true; }
+            }
+
+            // 2. 交点吸附（增加异常保护，解决 eInvalidInput）
+            if (!foundCritical && nearbyCurves.Count >= 2 && nearbyCurves.Count < 50)
+            {
+                for (int i = 0; i < nearbyCurves.Count; i++)
+                {
+                    for (int j = i + 1; j < nearbyCurves.Count; j++)
+                    {
+                        try
+                        {
+                            using (Point3dCollection interPts = new Point3dCollection())
+                            {
+                                // 核心风险点：必须 catch 异常
+                                nearbyCurves[i].IntersectWith(nearbyCurves[j], Intersect.OnBothOperands, interPts, IntPtr.Zero, IntPtr.Zero);
+                                foreach (AcadPoint3d ip in interPts)
+                                {
+                                    double d = pt3d.DistanceTo(ip);
+                                    if (d < minCriticalDist) { minCriticalDist = d; bestSnapPt = ip; foundCritical = true; }
+                                }
+                            }
+                        }
+                        catch { continue; }
+                    }
+                }
+            }
+
+            if (foundCritical) return new AcadPoint2d(bestSnapPt.X, bestSnapPt.Y);
+
+            // 3. 曲线最近点吸附
+            double minLineDist = snapThreshold;
+            foreach (Curve curve in nearbyCurves)
+            {
+                try
+                {
+                    AcadPoint3d closest = curve.GetClosestPointTo(pt3d, false);
+                    double d = pt3d.DistanceTo(closest);
+                    if (d < minLineDist) { minLineDist = d; bestSnapPt = closest; }
+                }
+                catch { continue; }
+            }
+            return new AcadPoint2d(bestSnapPt.X, bestSnapPt.Y);
+        }
+        private void DrawInCad(Document doc, List<List<AcadPoint2d>> contours, SelectionSet originalLines, double scale, Editor ed)
+        {
+            double pixelSize = 1.0 / scale;
+            int count = 0;
+
             using (var loc = doc.LockDocument())
             using (Transaction tr = doc.TransactionManager.StartTransaction())
             {
-                var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
-                CheckAndCreateLayer(doc.Database, tr, _settings.LayerName);
+                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(doc.Database), OpenMode.ForWrite);
+                string layerName = _settings.LayerName ?? "LK_XS";
+                CheckAndCreateLayer(doc.Database, tr, layerName);
+
                 foreach (var pts in contours)
                 {
+                    count++;
+                    if (count % 10 == 0) // 每处理10个区域更新一次进度
+                    {
+                        ed.WriteMessage($"\n -> 正在处理第 {count}/{contours.Count} 个区域...");
+                    }
+
                     Polyline pl = new Polyline();
-                    for (int i = 0; i < pts.Count; i++) pl.AddVertexAt(i, pts[i], 0, 0, 0);
-                    pl.Closed = true; pl.Layer = _settings.LayerName;
-                    btr.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true);
+                    int vertexIndex = 0;
+                    AcadPoint2d lastAddedPt = new AcadPoint2d(double.NaN, double.NaN);
+
+                    for (int i = 0; i < pts.Count; i++)
+                    {
+                        // 吸附逻辑
+                        AcadPoint2d snappedPt = SnapPointToOriginalCurves(pts[i], originalLines, tr, pixelSize);
+                        if (vertexIndex > 0 && snappedPt.GetDistanceTo(lastAddedPt) < 0.001) continue;
+                        pl.AddVertexAt(vertexIndex++, snappedPt, 0, 0, 0);
+                        lastAddedPt = snappedPt;
+                    }
+
+                    if (pl.NumberOfVertices > 2)
+                    {
+                        if (pl.GetPoint2dAt(0).GetDistanceTo(pl.GetPoint2dAt(pl.NumberOfVertices - 1)) < 0.01)
+                            pl.RemoveVertexAt(pl.NumberOfVertices - 1);
+                        pl.Closed = true;
+                    }
+
+                    pl.Layer = layerName;
+                    btr.AppendEntity(pl);
+                    tr.AddNewlyCreatedDBObject(pl, true);
                 }
                 tr.Commit();
             }
@@ -498,36 +642,83 @@ namespace Plugin_ContourMaster.Services
 
         private Bitmap RasterizeSelection(Document doc, SelectionSet ss, Extents3d ext, double scale)
         {
-            int bw = (int)((ext.MaxPoint.X - ext.MinPoint.X) * scale) + 100;
-            int bh = (int)((ext.MaxPoint.Y - ext.MinPoint.Y) * scale) + 100;
-            Bitmap bmp = new Bitmap(bw, bh);
+            // 根据缩放比例计算位图尺寸，并在四周预留 50 像素（共 100 像素）的边距防止边缘裁剪
+            int bmpW = (int)((ext.MaxPoint.X - ext.MinPoint.X) * scale) + 100;
+            int bmpH = (int)((ext.MaxPoint.Y - ext.MinPoint.Y) * scale) + 100;
+
+            // 内存安全检查：限制位图最大尺寸，防止超大选区导致内存溢出
+            if (bmpW <= 0 || bmpH <= 0 || bmpW > 15000 || bmpH > 15000) return null;
+
+            Bitmap bmp = new Bitmap(bmpW, bmpH);
             using (Graphics g = Graphics.FromImage(bmp))
             {
-                // ✨ 修改 1：关闭抗锯齿。抗锯齿产生的灰色边缘会导致识别出的轮廓“缩水”或“胀大”
-                g.SmoothingMode = SmoothingMode.None;
                 g.Clear(System.Drawing.Color.Black);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
 
                 using (Transaction tr = doc.TransactionManager.StartTransaction())
-                // ✨ 修改 2：将画笔宽度从 3.0 减小为 1.0 或 1.5
-                // 识别“洞”时，轮廓会偏向画笔的内侧。画笔越细，生成的轮廓越接近原始矢量中心线。
-                using (System.Drawing.Pen p = new System.Drawing.Pen(System.Drawing.Color.White, 1.0f))
                 {
-                    foreach (SelectedObject so in ss)
+                    // 使用白色 3.0f 宽度的画笔。
+                    // 提示：线条必须有厚度，OpenCV 才能准确识别出轮廓的内外边界。
+                    using (System.Drawing.Pen thinPen = new System.Drawing.Pen(System.Drawing.Color.White, 3.0f))
                     {
-                        Curve c = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
-                        if (c == null) continue;
-                        List<PointF> pts = new List<PointF>();
-                        // 增加采样点密度，确保曲线平滑
-                        double start = c.StartParam;
-                        double end = c.EndParam;
-                        int steps = 300;
-                        for (int i = 0; i <= steps; i++)
+                        foreach (SelectedObject so in ss)
                         {
-                            AcadPoint3d pt = c.GetPointAtParameter(start + (end - start) * i / steps);
-                            pts.Add(new PointF((float)((pt.X - ext.MinPoint.X) * scale) + 50f, (float)((ext.MaxPoint.Y - pt.Y) * scale) + 50f));
+                            try
+                            {
+                                Curve curve = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Curve;
+                                if (curve == null) continue;
+
+                                double startParam = curve.StartParam;
+                                double endParam = curve.EndParam;
+
+                                // 忽略零长度或退化的曲线
+                                if (Math.Abs(endParam - startParam) < 1e-7) continue;
+
+                                int segments = 100; // 采样频率。对于 800+ 元素，100 次采样是平衡速度与精度的较好选择
+                                List<PointF> pts = new List<PointF>();
+                                double step = (endParam - startParam) / segments;
+
+                                for (int i = 0; i <= segments; i++)
+                                {
+                                    try
+                                    {
+                                        double t = startParam + (step * i);
+
+                                        // 严格约束参数范围，防止浮点数精度误差导致 t 略微超出边界而触发 eInvalidInput
+                                        if (t < startParam) t = startParam;
+                                        if (t > endParam) t = endParam;
+
+                                        AcadPoint3d p = curve.GetPointAtParameter(t);
+
+                                        // 坐标转换逻辑：
+                                        // 1. (p.X - ext.MinPoint.X) * scale: 将 CAD 坐标平移并缩放
+                                        // 2. (ext.MaxPoint.Y - p.Y) * scale: CAD Y轴向上，位图 Y轴向下，需进行翻转
+                                        // 3. + 50f: 加上预留的边距偏移量
+                                        float px = (float)((p.X - ext.MinPoint.X) * scale) + 50f;
+                                        float py = (float)((ext.MaxPoint.Y - p.Y) * scale) + 50f;
+                                        pts.Add(new PointF(px, py));
+                                    }
+                                    catch
+                                    {
+                                        // 捕获单个采样点的几何运算异常，允许跳过该点以保证多段线继续绘制
+                                        continue;
+                                    }
+                                }
+
+                                // 仅当成功获取到至少两个点时才进行绘制
+                                if (pts.Count > 1)
+                                {
+                                    g.DrawLines(thinPen, pts.ToArray());
+                                }
+                            }
+                            catch
+                            {
+                                // 捕获无法识别或已损坏实体的异常，确保不中断后续实体的处理
+                                continue;
+                            }
                         }
-                        if (pts.Count > 1) g.DrawLines(p, pts.ToArray());
                     }
+                    tr.Commit();
                 }
             }
             return bmp;
