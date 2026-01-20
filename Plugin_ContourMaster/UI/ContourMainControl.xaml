@@ -8,8 +8,7 @@
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
              mc:Ignorable="d" 
              d:DesignHeight="850" d:DesignWidth="300"
-             Background="#F0F2F5">
-
+             Background="#252526">
     <UserControl.Resources>
         <local:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
@@ -23,7 +22,7 @@
 
         <Style x:Key="LabelStyle" TargetType="TextBlock">
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="#333333"/>
+            <Setter Property="Foreground" Value="#CCCCCC"/>
             <Setter Property="Margin" Value="0,0,0,5"/>
         </Style>
 
@@ -35,34 +34,137 @@
         <Style TargetType="GroupBox">
             <Setter Property="Margin" Value="0,0,0,12"/>
             <Setter Property="Padding" Value="10"/>
-            <Setter Property="BorderBrush" Value="#DCDCDC"/>
-            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#434346"/>
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="GroupBox">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <ContentPresenter Grid.Row="0" ContentSource="Header" RecognizesAccessKey="True" Margin="5,0,0,2"/>
+                            <Border Grid.Row="1" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" 
+                                    BorderThickness="1" 
+                                    Background="{TemplateBinding Background}" 
+                                    CornerRadius="2"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter />
+                            </Border>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
             <Setter Property="HeaderTemplate">
                 <Setter.Value>
                     <DataTemplate>
-                        <TextBlock Text="{Binding}" FontWeight="Bold" Foreground="#444444"/>
+                        <TextBlock Text="{Binding}" FontWeight="Bold" Foreground="#007ACC"/>
                     </DataTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#333337"/>
+            <Setter Property="Foreground" Value="#E1E1E1"/>
+            <Setter Property="BorderBrush" Value="#434346"/>
+            <Setter Property="Padding" Value="5,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Name="ToggleButton" 
+                                          Background="{TemplateBinding Background}" 
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          Grid.ColumnSpan="2" Focusable="false" 
+                                          IsChecked="{Binding Path=IsDropDownOpen,Mode=TwoWay,RelativeSource={RelativeSource TemplatedParent}}" 
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Name="Border" CornerRadius="2" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+                                            <Path Name="Arrow" Fill="#AAA" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0" Data="M 0 0 L 4 4 L 8 0 Z"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False" 
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              Margin="8,3,23,3" VerticalAlignment="Center" HorizontalAlignment="Left" />
+
+                            <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Grid Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <Border Name="DropDownBorder" Background="#2D2D30" BorderThickness="1" BorderBrush="#434346" CornerRadius="2"/>
+                                    <ScrollViewer Margin="2" SnapsToDevicePixels="True" VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Grid>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#E1E1E1"/>
+            <Setter Property="Padding" Value="8,5"/>
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="#007ACC"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#007ACC"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#333337"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#434346"/>
+            <Setter Property="CaretBrush" Value="White"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="5,0"/>
+        </Style>
+
+        <Style TargetType="PasswordBox">
+            <Setter Property="Background" Value="#333337"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#434346"/>
+            <Setter Property="CaretBrush" Value="White"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="5,0"/>
+        </Style>
+
+        <Style TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#E1E1E1"/>
+            <Setter Property="Margin" Value="0,5,0,5"/>
+        </Style>
     </UserControl.Resources>
 
-    <Grid>
+    <Grid Background="#252526">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="#007ACC" Padding="15,12">
+        <Border Grid.Row="0" Background="#1E1E1E" Padding="15,12">
             <Grid>
-                <TextBlock Text="🎯 智能轮廓文字提取" Foreground="White" FontSize="14" FontWeight="Bold" VerticalAlignment="Center"/>
-
+                <TextBlock Text="🎯 轮廓图像识别" Foreground="#00A2ED" FontSize="14" FontWeight="Bold" VerticalAlignment="Center"/>
                 <Button HorizontalAlignment="Right" VerticalAlignment="Center" 
-                Background="Transparent" BorderThickness="0" Cursor="Hand" 
-                Click="BtnAbout_Click" ToolTip="关于与定制服务">
-                    <Border Width="18" Height="18" Background="White" CornerRadius="2">
-                        <TextBlock Text="i" Foreground="#007ACC" FontWeight="Bold" 
-                           HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12"/>
+                        Background="Transparent" BorderThickness="0" Cursor="Hand" 
+                        Click="BtnAbout_Click">
+                    <Border Width="18" Height="18" Background="#3E3E42" CornerRadius="2">
+                        <TextBlock Text="i" Foreground="#00A2ED" FontWeight="Bold" 
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12"/>
                     </Border>
                 </Button>
             </Grid>
@@ -78,19 +180,16 @@
                             <TextBlock Text="{Binding PrecisionLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
                             <Slider Minimum="1" Maximum="10" Value="{Binding PrecisionLevel}" TickFrequency="1" IsSnapToTickEnabled="True" Margin="10,0"/>
                         </DockPanel>
-
                         <DockPanel Margin="0,5">
                             <TextBlock Text="识别阈值" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding Threshold, StringFormat='\{0:F0\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
                             <Slider Minimum="0" Maximum="255" Value="{Binding Threshold}" TickFrequency="5" IsSnapToTickEnabled="True" Margin="10,0"/>
                         </DockPanel>
-
                         <DockPanel Margin="0,5">
                             <TextBlock Text="补缝距离" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding SimplifyTolerance, StringFormat='\{0:F2\}'}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
                             <Slider Minimum="0.01" Maximum="5.0" Value="{Binding SimplifyTolerance}" TickFrequency="0.05" IsSnapToTickEnabled="True" Margin="10,0"/>
                         </DockPanel>
-
                         <DockPanel Margin="0,5">
                             <TextBlock Text="平滑等级" Style="{StaticResource LabelStyle}" VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding SmoothLevel}" Style="{StaticResource ValueStyle}" DockPanel.Dock="Right"/>
@@ -102,11 +201,11 @@
                 <GroupBox Header="2. 输出设置">
                     <DockPanel>
                         <TextBlock Text="生成图层:" Style="{StaticResource LabelStyle}" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                        <TextBox Text="{Binding LayerName}" Height="24" VerticalContentAlignment="Center" Padding="5,0"/>
+                        <TextBox Text="{Binding LayerName}" Height="24"/>
                     </DockPanel>
                 </GroupBox>
 
-                <GroupBox Header="3. 识别模式配置" Background="#F9F9F9">
+                <GroupBox Header="3. 识别模式配置">
                     <StackPanel>
                         <UniformGrid Columns="2" Margin="0,5">
                             <RadioButton Content="线条提取" GroupName="MainMode" 
@@ -116,7 +215,7 @@
                         </UniformGrid>
 
                         <StackPanel Visibility="{Binding IsOcrMode, Converter={StaticResource BooleanToVisibilityConverter}}" Margin="0,10,0,0">
-                            <Separator Margin="0,0,0,10"/>
+                            <Separator Margin="0,0,0,10" Background="#3E3E42"/>
                             <TextBlock Text="OCR 引擎选择" Style="{StaticResource LabelStyle}" FontSize="11"/>
                             <ComboBox SelectedItem="{Binding SelectedOcrEngine}" 
                                       ItemsSource="{Binding Source={StaticResource OcrEngineEnumValues}}" Height="26" Margin="0,0,0,8"/>
@@ -132,9 +231,7 @@
                                         </Style.Triggers>
                                     </Style>
                                 </StackPanel.Style>
-
-                                <CheckBox x:Name="ChkShowKeys" Content="显示明文 Key" FontSize="10" Margin="0,0,0,8" Foreground="#666666"/>
-
+                                <CheckBox x:Name="ChkShowKeys" Content="显示明文 Key" FontSize="10" Margin="0,0,0,8" Foreground="#AAAAAA"/>
                                 <TextBlock Text="Baidu API Key" FontSize="10" Foreground="#666666"/>
                                 <Grid Margin="0,2,0,8">
                                     <TextBox Text="{Binding BaiduApiKey, UpdateSourceTrigger=PropertyChanged}" 
@@ -142,7 +239,6 @@
                                     <PasswordBox x:Name="PwdApiKey" PasswordChar="*" PasswordChanged="PwdApiKey_PasswordChanged"
                                                  Visibility="{Binding IsChecked, ElementName=ChkShowKeys, Converter={StaticResource InverseBooleanToVisibilityConverter}}"/>
                                 </Grid>
-
                                 <TextBlock Text="Baidu Secret Key" FontSize="10" Foreground="#666666"/>
                                 <Grid Margin="0,2,0,0">
                                     <TextBox Text="{Binding BaiduSecretKey, UpdateSourceTrigger=PropertyChanged}" 
@@ -156,36 +252,27 @@
                 </GroupBox>
 
                 <StackPanel Margin="0,10,0,0">
-                    <Button Content="🖼️ 识别图像参照" Height="40" Click="BtnImage_Click" 
-                            Background="#E3F2FD" BorderBrush="#BBDEFB" Margin="0,0,0,10"/>
+                    <UniformGrid Columns="2" Margin="0,0,0,10">
+                        <Button Content="🖼️ 图像识别" Height="45" Click="BtnImage_Click" 
+                                Background="#3E3E42" Foreground="#E1E1E1" BorderThickness="0" Margin="0,0,5,0"/>
+                        <Button Content="🚀 轮廓提取" Height="45" Click="BtnExecute_Click"
+                                Background="#007ACC" Foreground="White" FontSize="14" FontWeight="Bold" BorderThickness="0" Margin="5,0,0,0">
+                            <Button.Resources>
+                                <Style TargetType="Border">
+                                    <Setter Property="CornerRadius" Value="4"/>
+                                </Style>
+                            </Button.Resources>
+                        </Button>
+                    </UniformGrid>
 
-                    <Button Content="🚀 开始矢量提取" Height="50" Click="BtnExecute_Click"
-                            Background="#007ACC" Foreground="White" FontSize="15" FontWeight="Bold" BorderThickness="0">
-                        <Button.Resources>
-                            <Style TargetType="Border">
-                                <Setter Property="CornerRadius" Value="6"/>
-                            </Style>
-                        </Button.Resources>
-                    </Button>
-
-                    <Border Background="#EBEEF5" CornerRadius="4" Padding="10" Margin="0,15,0,5">
+                    <Border Background="#2D2D30" BorderBrush="#434346" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,5,0,5">
                         <StackPanel>
-                            <TextBlock Text="💡 参数使用说明：" FontWeight="Bold" Foreground="#606266" Margin="0,0,0,5" FontSize="11"/>
-
-                            <TextBlock Text="• 采样精度：控制转换图片的像素分辨率。数值越高，识别细小区域能力越强。" 
-                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
-
-                            <TextBlock Text="• 识别阈值：区分背景与线条。如果线条颜色较浅，请适当调低该数值。" 
-                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
-
-                            <TextBlock Text="• 补缝距离：自动连接断开线。数值越大，越能填补缺口，但细节会丢失。" 
-                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
-
-                            <TextBlock Text="• 平滑等级：控制顶点密度。数值越高点数越少，但重合度会略微下降。" 
-                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
-
-                            <TextBlock Text="• 图像模式提示：识别前需先点击“识别图像参照”。" 
-                                       Foreground="#666666" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+                            <TextBlock Text="💡 参数使用说明：" FontWeight="Bold" Foreground="#007ACC" Margin="0,0,0,5" FontSize="11"/>
+                            <TextBlock Text="• 采样精度：控制转换图片的像素分辨率。数值越高，识别精细度越高。" Foreground="#999999" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+                            <TextBlock Text="• 识别阈值：背景深则调高，背景浅则调低。" Foreground="#999999" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+                            <TextBlock Text="• 补缝距离：自动填补缺口。数值越大，细节丢失越多。" Foreground="#999999" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+                            <TextBlock Text="• 平滑等级：控制顶点密度。数值越高点数越少。" Foreground="#999999" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
+                            <TextBlock Text="• 百度OCR：该功能需自行申请百度通用文字识别（高精度含位置版）api，每月有免费的额度。" Foreground="#999999" FontSize="10" TextWrapping="Wrap" Margin="0,2"/>
                         </StackPanel>
                     </Border>
                 </StackPanel>

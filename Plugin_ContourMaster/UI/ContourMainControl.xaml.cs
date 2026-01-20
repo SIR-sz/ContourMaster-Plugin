@@ -1,12 +1,15 @@
-﻿using Plugin_ContourMaster.Models;
+﻿using Autodesk.AutoCAD.ApplicationServices; // 新增：用于 Application.MainWindow
+using Plugin_ContourMaster.Models;
 using Plugin_ContourMaster.Services;
 using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Interop; // 新增：用于 WindowInteropHelper
 
 namespace Plugin_ContourMaster.UI
 {
+
 
     // ✨ 确保是 public，否则 XAML 找不到
     public class InverseBooleanConverter : IValueConverter
@@ -31,7 +34,7 @@ namespace Plugin_ContourMaster.UI
     public partial class ContourMainControl : UserControl
     {
         public ContourSettings Settings { get; set; } = new ContourSettings();
-
+        private static ContourFloatingWindow _floatingWin = null;
         public ContourMainControl()
         {
             InitializeComponent();
@@ -86,25 +89,39 @@ namespace Plugin_ContourMaster.UI
         private static Autodesk.AutoCAD.Windows.PaletteSet _ps = null;
 
         /// <summary>
-        /// 规范要求的静态启动方法：处理调色板初始化与显示逻辑
+        /// [核心方法]: 启动悬浮工具窗口。
+        /// 逻辑：检查实例是否存在，若不存在则新建并绑定 AutoCAD 为所有者，实现非模态显示。
         /// </summary>
         public static void ShowTool()
         {
-            if (_ps == null)
+            try
             {
-                _ps = new Autodesk.AutoCAD.Windows.PaletteSet("像素轮廓工具", new Guid("F3A8E9B2-C12D-4C11-8D9A-2B3C4D5E6F7A"));
-                _ps.Size = new System.Drawing.Size(300, 600);
-
-                var control = new ContourMainControl();
-                // 使用 WindowsFormsHost 将 WPF 控件嵌入 AutoCAD 调色板
-                System.Windows.Forms.Integration.ElementHost host = new System.Windows.Forms.Integration.ElementHost
+                // 1. 如果窗口已存在且已加载，则直接激活并带到前台
+                if (_floatingWin != null && _floatingWin.IsLoaded)
                 {
-                    Child = control,
-                    Dock = System.Windows.Forms.DockStyle.Fill
-                };
-                _ps.Add("算法设置", host);
+                    _floatingWin.Activate();
+                    return;
+                }
+
+                // 2. 初始化设置并创建窗口实例
+                // 注意：ContourSettings 构造函数会自动从注册表加载保存的位置
+                var settings = new ContourSettings();
+                _floatingWin = new ContourFloatingWindow(settings);
+
+                // 3. 绑定所有者关系
+                // 通过 WindowInteropHelper 获取 AutoCAD 主句柄，确保窗口随 CAD 最小化/还原
+                IntPtr acadHwnd = Autodesk.AutoCAD.ApplicationServices.Application.MainWindow.Handle;
+                WindowInteropHelper helper = new WindowInteropHelper(_floatingWin);
+                helper.Owner = acadHwnd;
+
+                // 4. 调用 AutoCAD API 显示非模态窗口
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowModelessWindow(_floatingWin);
             }
-            _ps.Visible = true;
+            catch (System.Exception ex)
+            {
+                // 捕获启动过程中的任何异常
+                System.Windows.MessageBox.Show($"[ContourMaster] 启动悬浮窗失败: {ex.Message}");
+            }
         }
     }
 }

@@ -28,7 +28,45 @@ namespace Plugin_ContourMaster.Models
         private OcrEngineType _selectedOcrEngine = OcrEngineType.Tesseract;
         private string _baiduApiKey = "";
         private string _baiduSecretKey = "";
+        private double _winTop = 100;
+        private double _left = 100;
+        private double _winWidth = 320;
+        private double _winHeight = 600;
+        /// <summary>
+        /// 窗口顶部纵坐标位置
+        /// </summary>
+        public double WinTop
+        {
+            get => _winTop;
+            set { _winTop = value; OnPropertyChanged(); SaveToRegistry("WinTop", value); }
+        }
 
+        /// <summary>
+        /// 窗口左侧横坐标位置
+        /// </summary>
+        public double WinLeft
+        {
+            get => _left;
+            set { _left = value; OnPropertyChanged(); SaveToRegistry("WinLeft", value); }
+        }
+
+        /// <summary>
+        /// 窗口宽度
+        /// </summary>
+        public double WinWidth
+        {
+            get => _winWidth;
+            set { _winWidth = value; OnPropertyChanged(); SaveToRegistry("WinWidth", value); }
+        }
+
+        /// <summary>
+        /// 窗口高度
+        /// </summary>
+        public double WinHeight
+        {
+            get => _winHeight;
+            set { _winHeight = value; OnPropertyChanged(); SaveToRegistry("WinHeight", value); }
+        }
         public ContourSettings()
         {
             // 初始化时自动加载已保存的配置
@@ -95,33 +133,39 @@ namespace Plugin_ContourMaster.Models
 
         #region 注册表持久化逻辑
 
+        /// <summary>
+        /// 修改后的 LoadFromRegistry 方法：增加窗口位置信息的读取
+        /// </summary>
         private void LoadFromRegistry()
         {
             try
             {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegPath))
+                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RegPath))
                 {
                     if (key == null) return;
 
-                    // 加载字符串类型
+                    // 加载原有的设置
                     _layerName = key.GetValue("LayerName", "LK_XS").ToString();
                     _baiduApiKey = key.GetValue("BaiduApiKey", "").ToString();
                     _baiduSecretKey = key.GetValue("BaiduSecretKey", "").ToString();
-
-                    // 加载数值类型 (处理转换)
                     _threshold = Convert.ToDouble(key.GetValue("Threshold", 128.0));
                     _simplifyTolerance = Convert.ToDouble(key.GetValue("SimplifyTolerance", 0.5));
                     _smoothLevel = Convert.ToInt32(key.GetValue("SmoothLevel", 2));
                     _precisionLevel = Convert.ToInt32(key.GetValue("PrecisionLevel", 5));
                     _isOcrMode = Convert.ToBoolean(key.GetValue("IsOcrMode", false));
 
-                    // 加载枚举类型
                     string ocrTypeStr = key.GetValue("SelectedOcrEngine", "Tesseract").ToString();
                     if (Enum.TryParse(ocrTypeStr, out OcrEngineType ocrType))
                         _selectedOcrEngine = ocrType;
+
+                    // --- 新增：加载窗口位置和大小 ---
+                    _winTop = Convert.ToDouble(key.GetValue("WinTop", 100.0));
+                    _left = Convert.ToDouble(key.GetValue("WinLeft", 100.0));
+                    _winWidth = Convert.ToDouble(key.GetValue("WinWidth", 320.0));
+                    _winHeight = Convert.ToDouble(key.GetValue("WinHeight", 600.0));
                 }
             }
-            catch { /* 忽略读取异常，使用默认值 */ }
+            catch { /* 忽略读取异常 */ }
         }
 
         private void SaveToRegistry(string name, object value)

@@ -62,7 +62,7 @@ namespace Plugin_ContourMaster
 
         #region --- ICadTool 接口实现 (供主程序加载调用) ---
 
-        public string ToolName => "像素轮廓专家";
+        public string ToolName => "轮廓图像识别";
 
         public string IconCode => "\uE114";
 

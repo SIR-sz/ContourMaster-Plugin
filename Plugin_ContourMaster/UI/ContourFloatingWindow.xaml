@@ -1,0 +1,15 @@
+﻿<Window x:Class="Plugin_ContourMaster.UI.ContourFloatingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Plugin_ContourMaster.UI"
+        Title="像素轮廓专家" 
+        Width="{Binding WinWidth, Mode=TwoWay}" 
+        Height="{Binding WinHeight, Mode=TwoWay}"
+        Top="{Binding WinTop, Mode=TwoWay}" 
+        Left="{Binding WinLeft, Mode=TwoWay}"
+        WindowStyle="SingleBorderWindow"
+        ShowInTaskbar="False"
+        Topmost="False"
+        Background="#F3F3F3">
+    <local:ContourMainControl x:Name="MainContent"/>
+</Window>
