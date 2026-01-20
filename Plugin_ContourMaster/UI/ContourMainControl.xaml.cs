@@ -81,5 +81,30 @@ namespace Plugin_ContourMaster.UI
             // 设置为主窗口的子窗口，使其总是在最前
             Autodesk.AutoCAD.ApplicationServices.Application.ShowModalWindow(aboutWin);
         }
+        // 在 UI/ContourMainControl.xaml.cs 中添加/替换以下静态字段和方法
+
+        private static Autodesk.AutoCAD.Windows.PaletteSet _ps = null;
+
+        /// <summary>
+        /// 规范要求的静态启动方法：处理调色板初始化与显示逻辑
+        /// </summary>
+        public static void ShowTool()
+        {
+            if (_ps == null)
+            {
+                _ps = new Autodesk.AutoCAD.Windows.PaletteSet("像素轮廓工具", new Guid("F3A8E9B2-C12D-4C11-8D9A-2B3C4D5E6F7A"));
+                _ps.Size = new System.Drawing.Size(300, 600);
+
+                var control = new ContourMainControl();
+                // 使用 WindowsFormsHost 将 WPF 控件嵌入 AutoCAD 调色板
+                System.Windows.Forms.Integration.ElementHost host = new System.Windows.Forms.Integration.ElementHost
+                {
+                    Child = control,
+                    Dock = System.Windows.Forms.DockStyle.Fill
+                };
+                _ps.Add("算法设置", host);
+            }
+            _ps.Visible = true;
+        }
     }
 }
