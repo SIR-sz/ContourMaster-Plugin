@@ -2,14 +2,23 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Plugin_ContourMaster.UI"
-        Title="像素轮廓专家" 
+        Title="轮廓图像识别" 
         Width="{Binding WinWidth, Mode=TwoWay}" 
         Height="{Binding WinHeight, Mode=TwoWay}"
         Top="{Binding WinTop, Mode=TwoWay}" 
         Left="{Binding WinLeft, Mode=TwoWay}"
-        WindowStyle="SingleBorderWindow"
-        ShowInTaskbar="False"
-        Topmost="False"
-        Background="#F3F3F3">
-    <local:ContourMainControl x:Name="MainContent"/>
+        WindowStyle="None" 
+        ResizeMode="CanResize"
+        Background="#252526">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" 
+                      ResizeBorderThickness="6" 
+                      GlassFrameThickness="0" 
+                      CornerRadius="0" />
+    </WindowChrome.WindowChrome>
+
+    <Border BorderBrush="#444444" BorderThickness="1">
+        <local:ContourMainControl x:Name="MainContent"/>
+    </Border>
 </Window>

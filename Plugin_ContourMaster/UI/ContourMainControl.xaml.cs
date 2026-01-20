@@ -123,5 +123,28 @@ namespace Plugin_ContourMaster.UI
                 System.Windows.MessageBox.Show($"[ContourMaster] 启动悬浮窗失败: {ex.Message}");
             }
         }
+        // --- UI/ContourMainControl.xaml.cs ---
+
+        /// <summary>
+        /// 处理标题栏鼠标左键按下事件，实现窗口拖动
+        /// </summary>
+        private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == System.Windows.Input.MouseButton.Left)
+            {
+                // 找到当前的承载窗口并执行拖动
+                System.Windows.Window.GetWindow(this)?.DragMove();
+            }
+        }
+
+
+        /// <summary>
+        /// 处理自定义关闭按钮点击事件
+        /// </summary>
+        private void BtnClose_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+            // 关闭承载该用户控件的窗口
+            System.Windows.Window.GetWindow(this)?.Close();
+        }
     }
 }
